@@ -1,0 +1,8 @@
+*.pyc
+y_sweet_sdk/
+git_sync_key
+git_sync_key.pub
+.auth.env
+.auth.staging.env
+repos/
+state/

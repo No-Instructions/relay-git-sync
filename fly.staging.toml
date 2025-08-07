@@ -1,0 +1,24 @@
+app = 'relay-git-connector-staging'
+primary_region = 'sjc'
+
+kill_signal = "SIGINT"
+kill_timeout = 5
+
+
+[build]
+  dockerfile = "./Dockerfile"
+
+[experimental]
+  auto_rollback = true
+  max_per_region = 1  # Important! Otherwise you risk data corruption...
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'suspend'
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[mounts]]
+  source = "relay_git_data"
+  destination = "/data"
