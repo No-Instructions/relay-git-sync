@@ -8,7 +8,14 @@ import logging
 import traceback
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any, Tuple
-from models import SyncOperation, SyncType, OperationType, SyncRequest, SyncResult, create_document_resource_from_metadata
+from models import (
+    SyncOperation,
+    SyncType,
+    OperationType,
+    SyncRequest,
+    SyncResult,
+    create_document_resource_from_metadata,
+)
 from relay_client import RelayClient
 from persistence import PersistenceManager
 from s3rn import S3RNType, S3RN, S3RemoteFolder, S3RemoteDocument, S3RemoteFile, S3RemoteCanvas
@@ -19,13 +26,20 @@ logger = logging.getLogger(__name__)
 class SyncEngine:
     """Core synchronization logic for Y-Sweet documents to Git repositories"""
 
-    def __init__(self, data_dir: str, relay_client: RelayClient, persistence_manager: Optional[PersistenceManager] = None):
+    def __init__(
+        self,
+        data_dir: str,
+        relay_client: RelayClient,
+        persistence_manager: Optional[PersistenceManager] = None,
+    ):
         self.data_dir = data_dir
         self.relay_client = relay_client
         self.persistence_manager = persistence_manager or PersistenceManager(data_dir)
         self.folder_sync_locks: Dict[str, threading.Lock] = {}
 
-    def process_document_change(self, relay_id: str, resource_id: str, timestamp: datetime) -> SyncResult:
+    def process_document_change(
+        self, relay_id: str, resource_id: str, timestamp: datetime
+    ) -> SyncResult:
         """Process a document change notification with individual UUIDs"""
         try:
             print(f"Processing document change for relay {relay_id}, resource {resource_id}")
@@ -44,7 +58,7 @@ class SyncEngine:
                         resource=None,
                         operations=[],
                         success=False,
-                        error=f"Resource {resource_id} expected to be folder but missing filemeta_v0"
+                        error=f"Resource {resource_id} expected to be folder but missing filemeta_v0",
                     )
 
                 # Extract filemeta from Y.Doc
@@ -57,14 +71,18 @@ class SyncEngine:
                 self.persistence_manager.init_git_repo(relay_id, resource_id)
 
                 # Update our stored filemeta for this folder
-                old_filemeta = self.persistence_manager.filemeta_folders[relay_id].get(resource_id, {})
+                old_filemeta = self.persistence_manager.filemeta_folders[relay_id].get(
+                    resource_id, {}
+                )
                 self.persistence_manager.filemeta_folders[relay_id][resource_id] = filemeta_dict
 
                 # Rebuild resource index since filemeta changed
                 self.persistence_manager._build_resource_index(relay_id)
 
                 # Apply sync algorithm for folder changes
-                folder_operations = self.apply_remote_folder_changes(relay_id, folder_resource, old_filemeta, filemeta_dict)
+                folder_operations = self.apply_remote_folder_changes(
+                    relay_id, folder_resource, old_filemeta, filemeta_dict
+                )
                 operations = folder_operations
 
                 print(f"Updated filemeta_v0 for folder {resource_id}")
@@ -76,14 +94,22 @@ class SyncEngine:
                 if document_resource is None:
                     # Debug info for unknown resource
                     print(f"DEBUG: Document {resource_id} not found in resource index")
-                    print(f"DEBUG: Resource index for relay {relay_id}: {list(self.persistence_manager.resource_index.get(relay_id, {}).keys())}")
+                    print(
+                        f"DEBUG: Resource index for relay {relay_id}: {list(self.persistence_manager.resource_index.get(relay_id, {}).keys())}"
+                    )
                     print(f"DEBUG: Looking for resource in filemeta...")
-                    for folder_id, filemeta in self.persistence_manager.filemeta_folders.get(relay_id, {}).items():
+                    for folder_id, filemeta in self.persistence_manager.filemeta_folders.get(
+                        relay_id, {}
+                    ).items():
                         for path, metadata in filemeta.items():
                             if isinstance(metadata, dict) and metadata.get("id") == resource_id:
-                                print(f"DEBUG: Found {resource_id} in folder {folder_id} at path {path} with metadata: {metadata}")
+                                print(
+                                    f"DEBUG: Found {resource_id} in folder {folder_id} at path {path} with metadata: {metadata}"
+                                )
 
-                    print(f"Warning: Document {resource_id} not found in resource index - skipping update")
+                    print(
+                        f"Warning: Document {resource_id} not found in resource index - skipping update"
+                    )
                     operations = []
                 else:
                     # Fetch content based on resource type
@@ -107,16 +133,20 @@ class SyncEngine:
                         print(f"Resource {resource_id} {doc_type} content updated")
 
                         # Calculate hash
-                        doc_hash = hashlib.sha256(content_str.encode('utf-8')).hexdigest()
+                        doc_hash = hashlib.sha256(content_str.encode("utf-8")).hexdigest()
                         print(f"Resource {resource_id} hash: {doc_hash}")
 
                         # Store hash using resource_id
-                        old_hash = self.persistence_manager.document_hashes[relay_id].get(resource_id)
+                        old_hash = self.persistence_manager.document_hashes[relay_id].get(
+                            resource_id
+                        )
                         self.persistence_manager.document_hashes[relay_id][resource_id] = doc_hash
 
                         # If this is a document update, trigger sync
                         if old_hash != doc_hash:
-                            operation = self.handle_document_update(document_resource, content_str, doc_hash)
+                            operation = self.handle_document_update(
+                                document_resource, content_str, doc_hash
+                            )
                             operations = [operation] if operation else []
                         else:
                             operations = []
@@ -129,18 +159,15 @@ class SyncEngine:
             return SyncResult(
                 resource=None,  # No specific resource since we're working with raw IDs
                 operations=operations,
-                success=True
+                success=True,
             )
 
         except Exception as e:
-            logger.error(f"Error processing document change for relay {relay_id}, resource {resource_id}: {e}")
-            logger.error(f"Document change processing traceback: {traceback.format_exc()}")
-            return SyncResult(
-                resource=None,
-                operations=[],
-                success=False,
-                error=str(e)
+            logger.error(
+                f"Error processing document change for relay {relay_id}, resource {resource_id}: {e}"
             )
+            logger.error(f"Document change processing traceback: {traceback.format_exc()}")
+            return SyncResult(resource=None, operations=[], success=False, error=str(e))
 
     def process_sync_request(self, request: SyncRequest) -> SyncResult:
         """Process a sync request using S3RN resource"""
@@ -169,14 +196,18 @@ class SyncEngine:
                 self.persistence_manager.init_git_repo(relay_id, folder_uuid)
 
                 # Update our stored filemeta for this folder using folder_uuid
-                old_filemeta = self.persistence_manager.filemeta_folders[relay_id].get(folder_uuid, {})
+                old_filemeta = self.persistence_manager.filemeta_folders[relay_id].get(
+                    folder_uuid, {}
+                )
                 self.persistence_manager.filemeta_folders[relay_id][folder_uuid] = filemeta_dict
 
                 # Rebuild resource index since filemeta changed
                 self.persistence_manager._build_resource_index(relay_id)
 
                 # Apply sync algorithm for folder changes
-                folder_operations = self.apply_remote_folder_changes(relay_id, resource, old_filemeta, filemeta_dict)
+                folder_operations = self.apply_remote_folder_changes(
+                    relay_id, resource, old_filemeta, filemeta_dict
+                )
                 operations.extend(folder_operations)
 
                 print(f"Updated filemeta_v0 for folder {resource}")
@@ -184,11 +215,11 @@ class SyncEngine:
             # Handle text document
             elif parsed_content.get("type") == "document":
                 content_str = parsed_content["content"]
-                doc_uuid = getattr(resource, 'document_id', None)
+                doc_uuid = getattr(resource, "document_id", None)
                 print(f"Document {resource} text content updated")
 
                 # Calculate hash for text documents
-                doc_hash = hashlib.sha256(content_str.encode('utf-8')).hexdigest()
+                doc_hash = hashlib.sha256(content_str.encode("utf-8")).hexdigest()
                 print(f"Document {resource} hash: {doc_hash}")
 
                 # Store hash using document UUID
@@ -204,11 +235,11 @@ class SyncEngine:
             # Handle canvas document
             elif parsed_content.get("type") == "canvas":
                 content_str = parsed_content["content"]
-                canvas_uuid = getattr(resource, 'canvas_id', None)
+                canvas_uuid = getattr(resource, "canvas_id", None)
                 print(f"Canvas {resource} content updated")
 
                 # Calculate hash for canvas documents
-                doc_hash = hashlib.sha256(content_str.encode('utf-8')).hexdigest()
+                doc_hash = hashlib.sha256(content_str.encode("utf-8")).hexdigest()
                 print(f"Canvas {resource} hash: {doc_hash}")
 
                 # Store hash using canvas UUID
@@ -226,21 +257,12 @@ class SyncEngine:
             # Save persistent data
             self.persistence_manager.save_persistent_data(relay_id)
 
-            return SyncResult(
-                resource=resource,
-                operations=operations,
-                success=True
-            )
+            return SyncResult(resource=resource, operations=operations, success=True)
 
         except Exception as e:
             logger.error(f"Error processing sync request for {request.resource}: {e}")
             logger.error(f"Sync request processing traceback: {traceback.format_exc()}")
-            return SyncResult(
-                resource=request.resource,
-                operations=[],
-                success=False,
-                error=str(e)
-            )
+            return SyncResult(resource=request.resource, operations=[], success=False, error=str(e))
 
     def sync_relay_all_folders(self, relay_id: str) -> List[SyncResult]:
         """CLI/API-triggered sync for all folders in a relay"""
@@ -263,8 +285,7 @@ class SyncEngine:
 
                 # Create sync request that will fetch fresh data from server
                 request = SyncRequest(
-                    resource=folder_resource,
-                    timestamp=datetime.now(timezone.utc)
+                    resource=folder_resource, timestamp=datetime.now(timezone.utc)
                 )
                 result = self.process_sync_request(request)
                 results.append(result)
@@ -273,22 +294,16 @@ class SyncEngine:
 
         except Exception as e:
             logger.error(f"Error syncing all folders for relay {relay_id}: {e}")
-            return [SyncResult(
-                resource=None,
-                operations=[],
-                success=False,
-                error=str(e)
-            )]
+            return [SyncResult(resource=None, operations=[], success=False, error=str(e))]
 
     def sync_specific_folder(self, folder_resource: S3RemoteFolder) -> SyncResult:
         """CLI/API-triggered sync for specific folder"""
-        request = SyncRequest(
-            resource=folder_resource,
-            timestamp=datetime.now(timezone.utc)
-        )
+        request = SyncRequest(resource=folder_resource, timestamp=datetime.now(timezone.utc))
         return self.process_sync_request(request)
 
-    def handle_document_update(self, document_resource: S3RNType, content: str, doc_hash: str) -> Optional[SyncOperation]:
+    def handle_document_update(
+        self, document_resource: S3RNType, content: str, doc_hash: str
+    ) -> Optional[SyncOperation]:
         """Handle updates to document content"""
         relay_id = S3RN.get_relay_id(document_resource)
         # Extract resource ID using instance method
@@ -298,7 +313,10 @@ class SyncEngine:
         found_document_resource = self.persistence_manager.lookup_resource(relay_id, doc_uuid)
         file_path = self.persistence_manager.get_resource_path(relay_id, doc_uuid)
 
-        if isinstance(found_document_resource, (S3RemoteDocument, S3RemoteCanvas, S3RemoteFile)) and file_path:
+        if (
+            isinstance(found_document_resource, (S3RemoteDocument, S3RemoteCanvas, S3RemoteFile))
+            and file_path
+        ):
             # Create operation for update
             folder_resource = S3RemoteFolder(relay_id, found_document_resource.folder_id)
             operation = SyncOperation(
@@ -307,16 +325,19 @@ class SyncEngine:
                 folder_resource=folder_resource,
                 document_resource=found_document_resource,
                 content=content,
-                metadata={"hash": doc_hash}
+                metadata={"hash": doc_hash},
             )
             self.execute_sync_operation(relay_id, operation)
             return operation
         else:
-            logger.warning(f"Cannot find path for document {doc_uuid} in relay {relay_id} filemeta - document may not be in a synced folder yet")
+            logger.warning(
+                f"Cannot find path for document {doc_uuid} in relay {relay_id} filemeta - document may not be in a synced folder yet"
+            )
             return None
 
-    def apply_remote_folder_changes(self, relay_id: str, folder_resource: S3RemoteFolder,
-                                  old_filemeta: Dict, new_filemeta: Dict) -> List[SyncOperation]:
+    def apply_remote_folder_changes(
+        self, relay_id: str, folder_resource: S3RemoteFolder, old_filemeta: Dict, new_filemeta: Dict
+    ) -> List[SyncOperation]:
         """
         Algorithm for applying remote folder changes to the local vault.
         This is the main entry point that orchestrates the sync process.
@@ -338,15 +359,27 @@ class SyncEngine:
 
                 # Phase 1: Process folder operations first (renames/moves affect files)
                 print(f"Phase 1: Processing folder operations for {folder_uuid}")
-                self.sync_by_type(relay_id, folder_resource, new_filemeta, diff_log, operations, [SyncType.FOLDER])
+                self.sync_by_type(
+                    relay_id, folder_resource, new_filemeta, diff_log, operations, [SyncType.FOLDER]
+                )
 
                 # Wait for folder operations to complete
                 self.await_all_operations(relay_id, operations)
 
                 # Phase 2: Process file operations (docs, canvas, sync files)
                 print(f"Phase 2: Processing file operations for {folder_uuid}")
-                file_sync_types = [SyncType.DOCUMENT, SyncType.CANVAS, SyncType.IMAGE, SyncType.PDF, SyncType.AUDIO, SyncType.VIDEO, SyncType.FILE]
-                self.sync_by_type(relay_id, folder_resource, new_filemeta, diff_log, operations, file_sync_types)
+                file_sync_types = [
+                    SyncType.DOCUMENT,
+                    SyncType.CANVAS,
+                    SyncType.IMAGE,
+                    SyncType.PDF,
+                    SyncType.AUDIO,
+                    SyncType.VIDEO,
+                    SyncType.FILE,
+                ]
+                self.sync_by_type(
+                    relay_id, folder_resource, new_filemeta, diff_log, operations, file_sync_types
+                )
 
                 # Phase 3: Handle deletions after creates/renames complete
                 print(f"Phase 3: Processing deletions for {folder_uuid}")
@@ -358,7 +391,9 @@ class SyncEngine:
                 self.await_operations(relay_id, [*creates, *renames])
 
                 # Phase 4: Clean up local files that no longer exist remotely
-                deletes = self.cleanup_extra_local_files(relay_id, folder_resource, new_filemeta, remote_paths, diff_log)
+                deletes = self.cleanup_extra_local_files(
+                    relay_id, folder_resource, new_filemeta, remote_paths, diff_log
+                )
                 operations.extend(deletes)
 
                 # Execute all operations
@@ -379,19 +414,34 @@ class SyncEngine:
                 logger.error(f"Folder sync traceback: {traceback.format_exc()}")
                 return []
 
-    def sync_by_type(self, relay_id: str, folder_resource: S3RemoteFolder, filemeta: Dict,
-                    diff_log: List[str], operations: List[SyncOperation], sync_types: List[SyncType]):
+    def sync_by_type(
+        self,
+        relay_id: str,
+        folder_resource: S3RemoteFolder,
+        filemeta: Dict,
+        diff_log: List[str],
+        operations: List[SyncOperation],
+        sync_types: List[SyncType],
+    ):
         """Process remote changes for specific file types."""
         for path, metadata in filemeta.items():
             if isinstance(metadata, dict) and "id" in metadata:
                 file_type = self.get_file_type(path, metadata)
                 if file_type in sync_types:
-                    operation = self.apply_remote_state(relay_id, folder_resource, path, metadata, diff_log)
+                    operation = self.apply_remote_state(
+                        relay_id, folder_resource, path, metadata, diff_log
+                    )
                     if operation:
                         operations.append(operation)
 
-    def apply_remote_state(self, relay_id: str, folder_resource: S3RemoteFolder, path: str,
-                          metadata: Dict, diff_log: List[str]) -> Optional[SyncOperation]:
+    def apply_remote_state(
+        self,
+        relay_id: str,
+        folder_resource: S3RemoteFolder,
+        path: str,
+        metadata: Dict,
+        diff_log: List[str],
+    ) -> Optional[SyncOperation]:
         """
         Core algorithm for determining what operation to perform for a remote file change.
         Returns an operation object.
@@ -410,7 +460,7 @@ class SyncEngine:
                 path=path,
                 folder_resource=folder_resource,
                 document_resource=None,  # No document resource for folders
-                metadata=metadata
+                metadata=metadata,
             )
 
         # Build path within folder subdirectory
@@ -424,29 +474,37 @@ class SyncEngine:
             if self.should_update_file(relay_id, doc_id, metadata, full_path):
                 diff_log.append(f"updating {folder_uuid}/{path.lstrip('/')}")
                 # Create S3RN resources for the operation
-                document_resource = create_document_resource_from_metadata(relay_id, folder_uuid, metadata)
+                document_resource = create_document_resource_from_metadata(
+                    relay_id, folder_uuid, metadata
+                )
                 return SyncOperation(
                     type=OperationType.UPDATE,
                     path=path,
                     folder_resource=folder_resource,
                     document_resource=document_resource,
-                    metadata=metadata
+                    metadata=metadata,
                 )
             else:
-                document_resource = create_document_resource_from_metadata(relay_id, folder_uuid, metadata)
+                document_resource = create_document_resource_from_metadata(
+                    relay_id, folder_uuid, metadata
+                )
                 return SyncOperation(
                     type=OperationType.NOOP,
                     path=path,
                     folder_resource=folder_resource,
                     document_resource=document_resource,
-                    completed=True
+                    completed=True,
                 )
 
         # Case 2: File was renamed/moved (exists locally with same doc_id)
         old_path = self.persistence_manager.find_local_file_by_doc_id(relay_id, folder_uuid, doc_id)
         if old_path and old_path != path:
-            diff_log.append(f"{folder_uuid}/{old_path.lstrip('/')} was renamed to {folder_uuid}/{path.lstrip('/')}")
-            document_resource = create_document_resource_from_metadata(relay_id, folder_uuid, metadata)
+            diff_log.append(
+                f"{folder_uuid}/{old_path.lstrip('/')} was renamed to {folder_uuid}/{path.lstrip('/')}"
+            )
+            document_resource = create_document_resource_from_metadata(
+                relay_id, folder_uuid, metadata
+            )
             return SyncOperation(
                 type=OperationType.RENAME,
                 path=path,
@@ -454,7 +512,7 @@ class SyncEngine:
                 document_resource=document_resource,
                 from_path=old_path,
                 to_path=path,
-                metadata=metadata
+                metadata=metadata,
             )
 
         # Case 3: New file created remotely
@@ -465,10 +523,12 @@ class SyncEngine:
             path=path,
             folder_resource=folder_resource,
             document_resource=document_resource,
-            metadata=metadata
+            metadata=metadata,
         )
 
-    def should_update_file(self, relay_id: str, doc_id: str, metadata: Dict, full_path: str) -> bool:
+    def should_update_file(
+        self, relay_id: str, doc_id: str, metadata: Dict, full_path: str
+    ) -> bool:
         """Check if a file should be updated based on hash comparison"""
         remote_hash = metadata.get("hash")
         if not remote_hash:
@@ -476,7 +536,7 @@ class SyncEngine:
 
         # Get local file hash
         try:
-            with open(full_path, 'rb') as f:
+            with open(full_path, "rb") as f:
                 local_content = f.read()
             local_hash = hashlib.sha256(local_content).hexdigest()
             return local_hash != remote_hash
@@ -497,13 +557,23 @@ class SyncEngine:
                 self.handle_server_delete(relay_id, operation)
 
             operation.completed = True
-            folder_uuid = S3RN.get_folder_id(operation.folder_resource) if operation.folder_resource else "unknown"
+            folder_uuid = (
+                S3RN.get_folder_id(operation.folder_resource)
+                if operation.folder_resource
+                else "unknown"
+            )
             print(f"Completed operation: {operation.type.value} {folder_uuid}/{operation.path}")
 
         except Exception as e:
             operation.error = str(e)
-            folder_uuid = S3RN.get_folder_id(operation.folder_resource) if operation.folder_resource else "unknown"
-            logger.error(f"Error executing operation {operation.type.value} {folder_uuid}/{operation.path}: {e}")
+            folder_uuid = (
+                S3RN.get_folder_id(operation.folder_resource)
+                if operation.folder_resource
+                else "unknown"
+            )
+            logger.error(
+                f"Error executing operation {operation.type.value} {folder_uuid}/{operation.path}: {e}"
+            )
             logger.error(f"Operation execution traceback: {traceback.format_exc()}")
 
     def handle_server_create(self, relay_id: str, operation: SyncOperation):
@@ -523,14 +593,20 @@ class SyncEngine:
         if isinstance(document_resource, S3RemoteFile):
             # S3RemoteFile requires special handling with file hash
             file_hash = operation.metadata.get("hash") if operation.metadata else None
-            mimetype = operation.metadata.get("mimetype", "application/octet-stream") if operation.metadata else "application/octet-stream"
+            mimetype = (
+                operation.metadata.get("mimetype", "application/octet-stream")
+                if operation.metadata
+                else "application/octet-stream"
+            )
 
             if not file_hash:
                 operation.error = "S3 file missing required hash metadata"
                 logger.warning(f"Skipping create operation for {path}: S3 file missing hash")
                 return
 
-            binary_content = self.relay_client.fetch_s3_file_content(document_resource, file_hash, mimetype)
+            binary_content = self.relay_client.fetch_s3_file_content(
+                document_resource, file_hash, mimetype
+            )
             if binary_content is None:
                 operation.error = "Failed to fetch S3 file content (possibly deleted)"
                 logger.warning(f"Skipping create operation for {path}: S3 file not found")
@@ -590,14 +666,20 @@ class SyncEngine:
         if isinstance(document_resource, S3RemoteFile):
             # S3RemoteFile requires special handling with file hash
             file_hash = operation.metadata.get("hash") if operation.metadata else None
-            mimetype = operation.metadata.get("mimetype", "application/octet-stream") if operation.metadata else "application/octet-stream"
+            mimetype = (
+                operation.metadata.get("mimetype", "application/octet-stream")
+                if operation.metadata
+                else "application/octet-stream"
+            )
 
             if not file_hash:
                 operation.error = "S3 file missing required hash metadata"
                 logger.warning(f"Skipping update operation for {path}: S3 file missing hash")
                 return
 
-            binary_content = self.relay_client.fetch_s3_file_content(document_resource, file_hash, mimetype)
+            binary_content = self.relay_client.fetch_s3_file_content(
+                document_resource, file_hash, mimetype
+            )
             if binary_content is None:
                 operation.error = "Failed to fetch S3 file content (possibly deleted)"
                 logger.warning(f"Skipping update operation for {path}: S3 file not found")
@@ -667,8 +749,14 @@ class SyncEngine:
 
         print(f"Deleted {full_path}")
 
-    def cleanup_extra_local_files(self, relay_id: str, folder_resource: S3RemoteFolder, current_filemeta: Dict,
-                                 remote_paths: List[str], diff_log: List[str]) -> List[SyncOperation]:
+    def cleanup_extra_local_files(
+        self,
+        relay_id: str,
+        folder_resource: S3RemoteFolder,
+        current_filemeta: Dict,
+        remote_paths: List[str],
+        diff_log: List[str],
+    ) -> List[SyncOperation]:
         """Delete local files that no longer exist remotely."""
         deletes = []
 
@@ -681,31 +769,37 @@ class SyncEngine:
         # Get all local files in this folder
         for root, dirs, files in os.walk(folder_path):
             # Skip .git directory to avoid deleting Git metadata
-            if '.git' in dirs:
-                dirs.remove('.git')
+            if ".git" in dirs:
+                dirs.remove(".git")
 
             for file in files:
                 full_path = os.path.join(root, file)
                 relative_path = os.path.relpath(full_path, folder_path)
                 # Normalize path for comparison with filemeta (add leading slash)
-                normalized_path = '/' + relative_path.replace('\\', '/')
+                normalized_path = "/" + relative_path.replace("\\", "/")
 
                 # Skip Git-related files
-                if relative_path.startswith('.git'):
+                if relative_path.startswith(".git"):
                     continue
 
                 # Check if this file exists in remote filemeta (try both with and without leading slash)
-                if relative_path not in current_filemeta and normalized_path not in current_filemeta:
-                    diff_log.append(f"deleted local file {folder_uuid}/{relative_path} for remotely deleted doc")
-                    deletes.append(SyncOperation(
-                        type=OperationType.DELETE,
-                        path=relative_path,
-                        folder_resource=folder_resource,
-                        document_resource=None
-                    ))
+                if (
+                    relative_path not in current_filemeta
+                    and normalized_path not in current_filemeta
+                ):
+                    diff_log.append(
+                        f"deleted local file {folder_uuid}/{relative_path} for remotely deleted doc"
+                    )
+                    deletes.append(
+                        SyncOperation(
+                            type=OperationType.DELETE,
+                            path=relative_path,
+                            folder_resource=folder_resource,
+                            document_resource=None,
+                        )
+                    )
 
         return deletes
-
 
     def get_file_type(self, path: str, metadata: Dict) -> SyncType:
         """Determine file type based on metadata type field and file extension"""
@@ -721,13 +815,13 @@ class SyncEngine:
         elif metadata_type == "file":
             # For generic files, determine specific type by extension
             path_lower = path.lower()
-            if path_lower.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp')):
+            if path_lower.endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp")):
                 return SyncType.IMAGE
-            elif path_lower.endswith('.pdf'):
+            elif path_lower.endswith(".pdf"):
                 return SyncType.PDF
-            elif path_lower.endswith(('.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a')):
+            elif path_lower.endswith((".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a")):
                 return SyncType.AUDIO
-            elif path_lower.endswith(('.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv')):
+            elif path_lower.endswith((".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".mkv")):
                 return SyncType.VIDEO
             else:
                 return SyncType.FILE

@@ -11,6 +11,7 @@ from s3rn import S3RNType, S3RemoteFolder, S3RemoteDocument, S3RemoteFile, S3Rem
 
 class ResourceType(Enum):
     """Resource types as they appear in metadata from the relay server"""
+
     MARKDOWN = "markdown"
     DOCUMENT = "document"
     CANVAS = "canvas"
@@ -35,16 +36,17 @@ class SyncType(Enum):
 
 # Type alias for binary file types - these are the sync types that represent binary/file content
 from typing import Literal
+
 SyncFileType = Literal[SyncType.IMAGE, SyncType.PDF, SyncType.AUDIO, SyncType.VIDEO, SyncType.FILE]
 
 
 def get_s3rn_resource_category(resource_type: str) -> str:
     """
     Map resource metadata types to S3RN resource categories.
-    
+
     Args:
         resource_type: The resource type from metadata (e.g., 'markdown', 'canvas', 'image')
-        
+
     Returns:
         S3RN resource category: 'document', 'canvas', 'file', or 'folder'
     """
@@ -52,8 +54,13 @@ def get_s3rn_resource_category(resource_type: str) -> str:
         return "document"
     elif resource_type == ResourceType.CANVAS.value:
         return "canvas"
-    elif resource_type in [ResourceType.FILE.value, ResourceType.IMAGE.value, ResourceType.PDF.value, 
-                          ResourceType.AUDIO.value, ResourceType.VIDEO.value]:
+    elif resource_type in [
+        ResourceType.FILE.value,
+        ResourceType.IMAGE.value,
+        ResourceType.PDF.value,
+        ResourceType.AUDIO.value,
+        ResourceType.VIDEO.value,
+    ]:
         return "file"
     elif resource_type == ResourceType.FOLDER.value:
         return "folder"
@@ -62,26 +69,30 @@ def get_s3rn_resource_category(resource_type: str) -> str:
         return "file"
 
 
-def create_document_resource_from_metadata(relay_id: str, folder_id: str, metadata: Dict) -> 'S3RNType':
+def create_document_resource_from_metadata(
+    relay_id: str, folder_id: str, metadata: Dict
+) -> "S3RNType":
     """Create appropriate S3RN resource from document metadata"""
     from s3rn import S3RemoteDocument, S3RemoteCanvas, S3RemoteFile
-    
+
     # Extract required fields from metadata
     doc_id = metadata.get("id")
     if not doc_id:
         raise ValueError(f"Missing 'id' field in metadata: {metadata}")
-    
+
     resource_type = metadata.get("type")
     if not resource_type:
         raise ValueError(f"Missing 'type' field in metadata: {metadata}")
-    
+
     # Special handling for folder type
     if resource_type == ResourceType.FOLDER.value:
-        raise ValueError(f"Cannot create document resource for folder type. Use folder resource instead")
-    
+        raise ValueError(
+            f"Cannot create document resource for folder type. Use folder resource instead"
+        )
+
     # Map to S3RN resource category and create appropriate resource
     s3rn_category = get_s3rn_resource_category(resource_type)
-    
+
     if s3rn_category == "document":
         return S3RemoteDocument(relay_id, folder_id, doc_id)
     elif s3rn_category == "canvas":
@@ -90,7 +101,9 @@ def create_document_resource_from_metadata(relay_id: str, folder_id: str, metada
         return S3RemoteFile(relay_id, folder_id, doc_id)
     else:
         valid_types = [rt.value for rt in ResourceType]
-        raise ValueError(f"Unknown resource type '{resource_type}' (mapped to category '{s3rn_category}'). Expected one of: {', '.join(valid_types)}")
+        raise ValueError(
+            f"Unknown resource type '{resource_type}' (mapped to category '{s3rn_category}'). Expected one of: {', '.join(valid_types)}"
+        )
 
 
 class OperationType(Enum):

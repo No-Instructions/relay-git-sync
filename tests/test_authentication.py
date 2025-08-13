@@ -8,7 +8,14 @@ from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from auth_middleware import AuthMiddleware, DefaultRejectMiddleware, noauth, webhook_auth, api_auth, require_auth
+from auth_middleware import (
+    AuthMiddleware,
+    DefaultRejectMiddleware,
+    noauth,
+    webhook_auth,
+    api_auth,
+    require_auth,
+)
 from cli import generate_webhook_secret, create_jwt_token
 from web_server import StarletteWebServer
 from webhook_handler import WebhookProcessor
@@ -34,27 +41,18 @@ def test_basic_middleware_functionality():
 
     @webhook_auth
     async def webhook_endpoint(request: Request):
-        user = getattr(request.state, 'user', None)
-        return JSONResponse({
-            "message": "Webhook endpoint",
-            "user": user
-        })
+        user = getattr(request.state, "user", None)
+        return JSONResponse({"message": "Webhook endpoint", "user": user})
 
     @api_auth()
     async def api_endpoint(request: Request):
-        user = getattr(request.state, 'user', None)
-        return JSONResponse({
-            "message": "API endpoint",
-            "user": user
-        })
+        user = getattr(request.state, "user", None)
+        return JSONResponse({"message": "API endpoint", "user": user})
 
-    @require_auth(scopes=['api'], roles=['admin'])
+    @require_auth(scopes=["api"], roles=["admin"])
     async def admin_endpoint(request: Request):
-        user = getattr(request.state, 'user', None)
-        return JSONResponse({
-            "message": "Admin endpoint",
-            "user": user
-        })
+        user = getattr(request.state, "user", None)
+        return JSONResponse({"message": "Admin endpoint", "user": user})
 
     # This endpoint has no decorator - should be rejected by default
     async def unprotected_endpoint(request: Request):
@@ -63,16 +61,16 @@ def test_basic_middleware_functionality():
     # Create test app
     app = Starlette(
         routes=[
-            Route('/public', public_endpoint, methods=['GET']),
-            Route('/webhooks', webhook_endpoint, methods=['POST']),
-            Route('/api', api_endpoint, methods=['GET']),
-            Route('/admin', admin_endpoint, methods=['GET']),
-            Route('/unprotected', unprotected_endpoint, methods=['GET']),
+            Route("/public", public_endpoint, methods=["GET"]),
+            Route("/webhooks", webhook_endpoint, methods=["POST"]),
+            Route("/api", api_endpoint, methods=["GET"]),
+            Route("/admin", admin_endpoint, methods=["GET"]),
+            Route("/unprotected", unprotected_endpoint, methods=["GET"]),
         ],
         middleware=[
             Middleware(AuthMiddleware, webhook_secret=test_secret),
-            Middleware(DefaultRejectMiddleware)
-        ]
+            Middleware(DefaultRejectMiddleware),
+        ],
     )
 
     client = TestClient(app)
@@ -103,7 +101,7 @@ def test_basic_middleware_functionality():
 
     # Test 3b: API endpoint with JWT token (should work)
     print("\n3b. Testing API endpoint with JWT token:")
-    api_token = create_jwt_token(test_secret, 'api', expires_in_days=1)
+    api_token = create_jwt_token(test_secret, "api", expires_in_days=1)
     headers = {"Authorization": f"Bearer {api_token}"}
     response = client.get("/api", headers=headers)
     print(f"Status: {response.status_code}")
@@ -129,7 +127,7 @@ def test_secret_generation():
     # Generate multiple secrets to ensure consistency
     secrets = [generate_webhook_secret() for _ in range(10)]
 
-    problematic_chars = ['/', '+', '=', '"', "'", ' ', '\n', '\t', '\\']
+    problematic_chars = ["/", "+", "=", '"', "'", " ", "\n", "\t", "\\"]
 
     for i, secret in enumerate(secrets):
         # Webhook secrets no longer have prefixes - they are plain shared secrets
@@ -153,21 +151,22 @@ def test_api_token_generation_and_validation():
 
     # Step 1: Generate an API secret (sk_ prefix)
     from cli import generate_jwt_secret
+
     api_secret = generate_jwt_secret()
     print(f"Generated API secret: {api_secret}")
 
     # Verify the secret has correct prefix
-    assert api_secret.startswith('sk_'), f"API secret should start with 'sk_' but got: {api_secret}"
+    assert api_secret.startswith("sk_"), f"API secret should start with 'sk_' but got: {api_secret}"
 
     # Verify the secret is env-var safe
     secret_part = api_secret[3:]
-    problematic_chars = ['/', '+', '=', '"', "'", ' ', '\n', '\t']
+    problematic_chars = ["/", "+", "=", '"', "'", " ", "\n", "\t"]
     has_problematic_chars = any(char in secret_part for char in problematic_chars)
     assert not has_problematic_chars, f"Secret contains problematic characters: {secret_part}"
 
     # Step 2: Create API JWT tokens
-    api_token_30d = create_jwt_token(api_secret, 'api', expires_in_days=30, name='test-api')
-    api_token_7d = create_jwt_token(api_secret, 'api', expires_in_days=7, name='short-lived')
+    api_token_30d = create_jwt_token(api_secret, "api", expires_in_days=30, name="test-api")
+    api_token_7d = create_jwt_token(api_secret, "api", expires_in_days=7, name="short-lived")
 
     print(f"API token (30d): {api_token_30d[:30]}...")
     print(f"API token (7d): {api_token_7d[:30]}...")
@@ -175,21 +174,19 @@ def test_api_token_generation_and_validation():
     # Step 3: Create test API endpoint
     @api_auth()
     async def test_api_endpoint(request: Request):
-        user = getattr(request.state, 'user', None)
-        return JSONResponse({
-            "message": "API request successful",
-            "authenticated": user is not None,
-            "user": user
-        })
+        user = getattr(request.state, "user", None)
+        return JSONResponse(
+            {"message": "API request successful", "authenticated": user is not None, "user": user}
+        )
 
     app = Starlette(
         routes=[
-            Route('/api/test', test_api_endpoint, methods=['GET']),
+            Route("/api/test", test_api_endpoint, methods=["GET"]),
         ],
         middleware=[
             Middleware(AuthMiddleware, webhook_secret=api_secret),
-            Middleware(DefaultRejectMiddleware)
-        ]
+            Middleware(DefaultRejectMiddleware),
+        ],
     )
 
     client = TestClient(app)
@@ -234,28 +231,29 @@ def test_flexible_authentication():
     # Generate secrets
     webhook_secret = generate_webhook_secret()  # Plain shared secret
     from cli import generate_jwt_secret
+
     api_secret = generate_jwt_secret()  # sk_ prefixed secret for JWT
-    api_token = create_jwt_token(api_secret, 'api', expires_in_days=1)
+    api_token = create_jwt_token(api_secret, "api", expires_in_days=1)
 
     # Create endpoints with different paths but same authentication requirements
     @webhook_auth
     async def webhook_handler(request: Request):
-        user = getattr(request.state, 'user', None)
+        user = getattr(request.state, "user", None)
         return JSONResponse({"type": "webhook", "user": user})
 
     @webhook_auth
     async def another_webhook_handler(request: Request):
-        user = getattr(request.state, 'user', None)
+        user = getattr(request.state, "user", None)
         return JSONResponse({"type": "another_webhook", "user": user})
 
     @api_auth()
     async def api_handler(request: Request):
-        user = getattr(request.state, 'user', None)
+        user = getattr(request.state, "user", None)
         return JSONResponse({"type": "api", "user": user})
 
     @api_auth()
     async def different_api_handler(request: Request):
-        user = getattr(request.state, 'user', None)
+        user = getattr(request.state, "user", None)
         return JSONResponse({"type": "different_api", "user": user})
 
     # Create separate apps to test webhook and API auth independently
@@ -264,25 +262,25 @@ def test_flexible_authentication():
     # Test webhook endpoints with shared secret auth
     webhook_app = Starlette(
         routes=[
-            Route('/webhooks', webhook_handler, methods=['POST']),
-            Route('/events/incoming', another_webhook_handler, methods=['POST']),
+            Route("/webhooks", webhook_handler, methods=["POST"]),
+            Route("/events/incoming", another_webhook_handler, methods=["POST"]),
         ],
         middleware=[
             Middleware(AuthMiddleware, webhook_secret=webhook_secret),
-            Middleware(DefaultRejectMiddleware)
-        ]
+            Middleware(DefaultRejectMiddleware),
+        ],
     )
 
     # Test API endpoints with JWT auth
     api_app = Starlette(
         routes=[
-            Route('/api/sync', api_handler, methods=['GET']),
-            Route('/management/status', different_api_handler, methods=['GET']),
+            Route("/api/sync", api_handler, methods=["GET"]),
+            Route("/management/status", different_api_handler, methods=["GET"]),
         ],
         middleware=[
             Middleware(AuthMiddleware, webhook_secret=api_secret),
-            Middleware(DefaultRejectMiddleware)
-        ]
+            Middleware(DefaultRejectMiddleware),
+        ],
     )
 
     webhook_client = TestClient(webhook_app)

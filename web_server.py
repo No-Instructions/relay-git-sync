@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 class StarletteWebServer:
     """Starlette-based webhook server with default reject authentication"""
 
-    def __init__(self, webhook_processor: WebhookProcessor, operations_queue: OperationsQueue, webhook_secret: str):
+    def __init__(
+        self,
+        webhook_processor: WebhookProcessor,
+        operations_queue: OperationsQueue,
+        webhook_secret: str,
+    ):
         self.webhook_processor = webhook_processor
         self.operations_queue = operations_queue
         self.webhook_secret = webhook_secret
@@ -29,16 +34,16 @@ class StarletteWebServer:
         # Create middleware with default reject pattern
         middleware = [
             Middleware(AuthMiddleware, webhook_secret=webhook_secret),
-            Middleware(DefaultRejectMiddleware)
+            Middleware(DefaultRejectMiddleware),
         ]
 
         # Create Starlette app
         self.app = Starlette(
             routes=[
-                Route('/webhooks', self.handle_webhook, methods=['POST']),
-                Route('/health', self.health_check, methods=['GET']),
+                Route("/webhooks", self.handle_webhook, methods=["POST"]),
+                Route("/health", self.health_check, methods=["GET"]),
             ],
-            middleware=middleware
+            middleware=middleware,
         )
 
     @webhook_auth
