@@ -128,15 +128,18 @@ def show_pubkey_command(args):
     try:
         from persistence import SSHKeyManager
 
-        ssh_key_manager = SSHKeyManager(args.data_dir)
+        ssh_key_manager = SSHKeyManager()
         pubkey = ssh_key_manager.get_public_key()
-        print("\nSSH Public Key:")
+        print("\nSSH Public Key (extracted from SSH_PRIVATE_KEY):")
         print("=" * 50)
         print(pubkey)
         print("=" * 50)
-        print(f"\nAdd this key to your Git hosting service as a deploy key.")
-        print(f"Private key location: {ssh_key_manager.private_key_path_for_display}")
+        print("\nAdd this key to your Git hosting service as a deploy key.")
         return 0
+    except ValueError as e:
+        print(f"Error: {e}")
+        print("Set SSH_PRIVATE_KEY environment variable with your private key.")
+        return 1
     except Exception as e:
         logger.error(f"Error getting public key: {e}")
         return 1
@@ -158,23 +161,6 @@ def webhook_keygen_command(args):
         logger.error(f"Error generating webhook secret: {e}")
         return 1
 
-
-def ssh_keygen_command(args):
-    """Handle ssh keygen command"""
-    try:
-        ssh_key_manager = SSHKeyManager(args.data_dir)
-        ssh_key_manager._ensure_ssh_key()
-        pubkey = ssh_key_manager.get_public_key()
-        print("\nGenerated SSH Key Pair:")
-        print("=" * 50)
-        print(pubkey)
-        print("=" * 50)
-        print(f"\nAdd this key to your Git hosting service as a deploy key.")
-        print(f"Private key location: {ssh_key_manager.private_key_path_for_display}")
-        return 0
-    except Exception as e:
-        logger.error(f"Error generating SSH key: {e}")
-        return 1
 
 
 def api_keygen_command(args):
@@ -240,7 +226,6 @@ Examples:
 
   # SSH key management
   python cli.py ssh show-pubkey
-  python cli.py ssh keygen
 
 Authentication Methods:
   Webhooks: WEBHOOK_SECRET (plain shared secret or whsec_* for Svix)
@@ -298,8 +283,6 @@ Authentication Methods:
     ssh_show_parser = ssh_subparsers.add_parser("show-pubkey", help="Show SSH public key")
     ssh_show_parser.set_defaults(func=show_pubkey_command)
 
-    ssh_keygen_parser = ssh_subparsers.add_parser("keygen", help="Generate SSH key pair")
-    ssh_keygen_parser.set_defaults(func=ssh_keygen_command)
 
     # API command group
     api_parser = subparsers.add_parser("api", help="API management")

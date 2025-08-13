@@ -94,7 +94,7 @@ The project includes Fly.io configuration (`fly.toml`) for deployment with persi
 
 ### Authentication
 - Supports API key authentication via relay server URL
-- SSH key management for Git operations (`persistence.py`)
+- SSH key management via environment variable (`persistence.py`)
 
 ## File Structure
 

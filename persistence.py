@@ -30,66 +30,77 @@ logger = logging.getLogger(__name__)
 
 
 class SSHKeyManager:
-    """Manage SSH keys for git authentication"""
+    """Manage SSH keys for git authentication using environment variables"""
 
-    def __init__(self, data_dir: str = "."):
-        self.ssh_dir = os.path.join(data_dir, "ssh")
-        self.private_key_path = os.path.join(self.ssh_dir, "git_sync_key")
-        self.public_key_path = os.path.join(self.ssh_dir, "git_sync_key.pub")
+    def __init__(self):
+        self._temp_key_path = None
+        self._setup_temp_key()
 
-    def ensure_keys_exist(self):
-        """Generate SSH keys if they don't exist"""
-        if not os.path.exists(self.private_key_path):
-            self.generate_keys()
-        return self.private_key_path, self.public_key_path
+    def _setup_temp_key(self):
+        """Create temporary key file from environment variable"""
+        private_key_pem = os.getenv("SSH_PRIVATE_KEY")
+        if not private_key_pem:
+            raise ValueError("SSH_PRIVATE_KEY environment variable is required")
 
-    def generate_keys(self):
-        """Generate new SSH key pair"""
-        print("Generating SSH key pair...")
+        self._temp_key_path = self._create_temp_key_file(private_key_pem)
 
-        # Create directory if it doesn't exist
-        os.makedirs(self.ssh_dir, exist_ok=True)
+    def _create_temp_key_file(self, private_key_pem: str) -> str:
+        """Create temporary file for private key from environment variable"""
+        import tempfile
 
-        # Generate private key
-        private_key = rsa.generate_private_key(
-            public_exponent=65537, key_size=2048, backend=default_backend()
-        )
-
-        # Serialize private key
-        private_pem = private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-
-        # Get public key
-        public_key = private_key.public_key()
-        public_ssh = public_key.public_bytes(
-            encoding=serialization.Encoding.OpenSSH, format=serialization.PublicFormat.OpenSSH
-        )
-
-        # Write private key
-        with open(self.private_key_path, "wb") as f:
-            f.write(private_pem)
-        os.chmod(self.private_key_path, 0o600)
-
-        # Write public key
-        with open(self.public_key_path, "wb") as f:
-            f.write(public_ssh)
-        os.chmod(self.public_key_path, 0o644)
-
-        print(f"SSH keys generated: {self.private_key_path}, {self.public_key_path}")
-
-    def get_public_key(self):
-        """Get public key content"""
-        self.ensure_keys_exist()
-        with open(self.public_key_path, "r") as f:
-            return f.read().strip()
+        fd, temp_path = tempfile.mkstemp(prefix="git_sync_key_", suffix=".pem")
+        try:
+            os.write(fd, private_key_pem.encode("utf-8"))
+            os.chmod(temp_path, 0o600)
+            # Register cleanup
+            atexit.register(lambda: os.unlink(temp_path) if os.path.exists(temp_path) else None)
+            return temp_path
+        finally:
+            os.close(fd)
 
     @property
-    def private_key_path_for_display(self):
-        """Get private key path for display purposes"""
-        return self.private_key_path
+    def private_key_path(self) -> str:
+        """Get private key path"""
+        return self._temp_key_path
+
+    def get_public_key(self) -> str:
+        """Extract public key from private key"""
+        private_key_pem = os.getenv("SSH_PRIVATE_KEY")
+        if not private_key_pem:
+            raise ValueError("SSH_PRIVATE_KEY environment variable is required")
+
+        try:
+            # Load private key
+            private_key = serialization.load_pem_private_key(
+                private_key_pem.encode("utf-8"), password=None, backend=default_backend()
+            )
+
+            # Extract public key
+            public_key = private_key.public_key()
+            public_ssh = public_key.public_bytes(
+                encoding=serialization.Encoding.OpenSSH, format=serialization.PublicFormat.OpenSSH
+            )
+
+            return public_ssh.decode("utf-8").strip()
+        except Exception as e:
+            # Try to parse as OpenSSH private key format
+            try:
+                from cryptography.hazmat.primitives.serialization import load_ssh_private_key
+
+                private_key = load_ssh_private_key(
+                    private_key_pem.encode("utf-8"), password=None, backend=default_backend()
+                )
+
+                # Extract public key
+                public_key = private_key.public_key()
+                public_ssh = public_key.public_bytes(
+                    encoding=serialization.Encoding.OpenSSH,
+                    format=serialization.PublicFormat.OpenSSH,
+                )
+
+                return public_ssh.decode("utf-8").strip()
+            except Exception:
+                raise ValueError(f"Invalid private key format in SSH_PRIVATE_KEY: {str(e)}")
 
 
 class PersistenceManager:
@@ -104,10 +115,15 @@ class PersistenceManager:
         self.data_dir = data_dir
         self.git_repos: Dict[str, git.Repo] = {}  # Now keyed by "relay_id/folder_id"
         self.git_lock = threading.Lock()  # Prevent concurrent git operations
-        self.ssh_key_manager = SSHKeyManager(data_dir)
 
-        # Generate SSH keys on startup
-        self.ssh_key_manager.ensure_keys_exist()
+        # Initialize SSH key manager only if SSH_PRIVATE_KEY is set
+        self.ssh_key_manager = None
+        if os.getenv("SSH_PRIVATE_KEY"):
+            try:
+                self.ssh_key_manager = SSHKeyManager()
+            except Exception as e:
+                logger.warning(f"Failed to initialize SSH key manager: {e}")
+                logger.warning("Git operations requiring SSH authentication will fail")
 
         # In-memory storage for state (these will be loaded/saved per relay)
         self.document_hashes: Dict[str, Dict[str, str]] = {}  # keyed by relay_id then doc_id
@@ -250,11 +266,12 @@ class PersistenceManager:
             # Set up SSH key environment for Git operations
             original_env = os.environ.copy()
             try:
-                # Configure Git to use our SSH key
-                private_key_path = self.ssh_key_manager.private_key_path
-                os.environ[
-                    "GIT_SSH_COMMAND"
-                ] = f'ssh -i "{private_key_path}" -o StrictHostKeyChecking=no'
+                # Configure Git to use our SSH key if available
+                if self.ssh_key_manager:
+                    private_key_path = self.ssh_key_manager.private_key_path
+                    os.environ[
+                        "GIT_SSH_COMMAND"
+                    ] = f'ssh -i "{private_key_path}" -o StrictHostKeyChecking=no'
 
                 return func(*args, **kwargs)
             except git.exc.GitCommandError as e:

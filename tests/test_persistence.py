@@ -558,47 +558,74 @@ class TestSSHKeyManager:
     """Test SSH key management functionality"""
 
     def setup_method(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.ssh_manager = SSHKeyManager(self.temp_dir)
+        # Generate a test key for testing
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.backends import default_backend
+
+        # Generate test private key
+        private_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048, backend=default_backend()
+        )
+
+        # Serialize private key
+        self.test_private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        # Store original env var
+        self.original_ssh_key = os.environ.get("SSH_PRIVATE_KEY")
+
+        # Set test key
+        os.environ["SSH_PRIVATE_KEY"] = self.test_private_pem
 
     def teardown_method(self):
-        shutil.rmtree(self.temp_dir)
+        # Restore original env var
+        if self.original_ssh_key:
+            os.environ["SSH_PRIVATE_KEY"] = self.original_ssh_key
+        else:
+            os.environ.pop("SSH_PRIVATE_KEY", None)
 
-    def test_generate_keys_creates_keypair(self):
-        """Test SSH key generation creates both private and public keys"""
-        self.ssh_manager.generate_keys()
+    def test_missing_ssh_key_raises_error(self):
+        """Test that missing SSH_PRIVATE_KEY raises ValueError"""
+        os.environ.pop("SSH_PRIVATE_KEY", None)
 
-        # Check both keys exist
-        assert os.path.exists(self.ssh_manager.private_key_path)
-        assert os.path.exists(self.ssh_manager.public_key_path)
+        with pytest.raises(ValueError, match="SSH_PRIVATE_KEY environment variable is required"):
+            SSHKeyManager()
 
-        # Check permissions
-        private_stat = os.stat(self.ssh_manager.private_key_path)
-        assert oct(private_stat.st_mode)[-3:] == "600"
+    def test_creates_temporary_key_file(self):
+        """Test SSH key manager creates temporary key file"""
+        ssh_manager = SSHKeyManager()
 
-        public_stat = os.stat(self.ssh_manager.public_key_path)
-        assert oct(public_stat.st_mode)[-3:] == "644"
+        # Check temp file exists and has correct permissions
+        assert os.path.exists(ssh_manager.private_key_path)
+        stat_info = os.stat(ssh_manager.private_key_path)
+        assert oct(stat_info.st_mode)[-3:] == "600"
 
-    def test_ensure_keys_exist_generates_if_missing(self):
-        """Test ensure_keys_exist generates keys if they don't exist"""
-        assert not os.path.exists(self.ssh_manager.private_key_path)
+        # Check file contains the key
+        with open(ssh_manager.private_key_path, "r") as f:
+            content = f.read()
+        assert content == self.test_private_pem
 
-        private_path, public_path = self.ssh_manager.ensure_keys_exist()
+    def test_get_public_key_extracts_from_private(self):
+        """Test extracting public key from private key"""
+        ssh_manager = SSHKeyManager()
 
-        assert os.path.exists(private_path)
-        assert os.path.exists(public_path)
-        assert private_path == self.ssh_manager.private_key_path
-        assert public_path == self.ssh_manager.public_key_path
-
-    def test_get_public_key_content(self):
-        """Test getting public key content"""
-        self.ssh_manager.generate_keys()
-
-        public_key = self.ssh_manager.get_public_key()
+        public_key = ssh_manager.get_public_key()
 
         # Check it's a valid SSH public key format
         assert public_key.startswith("ssh-rsa ")
         assert len(public_key.split()) >= 2  # ssh-rsa + key data
+
+    def test_invalid_key_format_raises_error(self):
+        """Test that invalid key format raises ValueError"""
+        os.environ["SSH_PRIVATE_KEY"] = "not a valid key"
+
+        ssh_manager = SSHKeyManager()  # This creates temp file
+        with pytest.raises(ValueError, match="Invalid private key format"):
+            ssh_manager.get_public_key()  # This validates the key
 
 
 if __name__ == "__main__":

@@ -87,6 +87,13 @@ if __name__ == "__main__":
         print("For management commands (webhook, ssh, api), use: python cli.py")
         exit(1)
 
+    # Check for SSH key (warn if missing, don't fail)
+    if not os.getenv("SSH_PRIVATE_KEY"):
+        print(
+            "Warning: SSH_PRIVATE_KEY environment variable not set. Git push operations will fail."
+        )
+        print("To use Git remotes, set SSH_PRIVATE_KEY with your private key.")
+
     run_server(
         args.relay_server_url,
         args.relay_server_api_key,

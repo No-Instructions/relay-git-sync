@@ -86,6 +86,7 @@ Start the webhook server:
 export RELAY_SERVER_URL=https://your-relay-server.com
 export RELAY_SERVER_API_KEY=your-server-api-key        # From System 3 team
 export WEBHOOK_SECRET=whs_...                          # From step 1 above
+export SSH_PRIVATE_KEY="$(cat git_sync_key)"          # Required for Git push operations
 export RELAY_GIT_DATA_DIR=/path/to/data                # Optional, defaults to current directory
 
 # Start the server
@@ -111,8 +112,25 @@ uv run cli.py sync --relay-id <relay-uuid> --folder-id <folder-uuid>
 
 ### SSH Key Setup
 
-Relay Git Sync will automatically generate SSH keys on startup.
-You can view the public key within your container by running:
+SSH keys must be provided via the `SSH_PRIVATE_KEY` environment variable.
+
+First, generate an SSH key pair externally:
+
+```bash
+# Generate Ed25519 key (recommended)
+ssh-keygen -t ed25519 -f git_sync_key -N ""
+
+# Or RSA key
+ssh-keygen -t rsa -b 2048 -f git_sync_key -N ""
+```
+
+Then set the environment variable:
+
+```bash
+export SSH_PRIVATE_KEY="$(cat git_sync_key)"
+```
+
+View the public key from the private key:
 
 ```bash
 uv run cli.py ssh show-pubkey
@@ -141,12 +159,9 @@ data-dir/
 ├── repos/
 │   └── <relay-id>/
 │       └── <folder-id>/          # Git repository for each folder
-├── state/
-│   └── <relay-id>/
-│       ├── document_hashes.json  # Change tracking
-│       ├── shared_folders.json   # Folder metadata
-│       └── local_state.json      # File state per folder
-└── ssh_keys/                     # SSH keys for Git access
-    ├── id_rsa
-    └── id_rsa.pub
+└── state/
+    └── <relay-id>/
+        ├── document_hashes.json  # Change tracking
+        ├── shared_folders.json   # Folder metadata
+        └── local_state.json      # File state per folder
 ```
