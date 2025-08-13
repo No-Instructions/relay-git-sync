@@ -32,4 +32,4 @@ ENV PYTHONPATH=/app
 EXPOSE 8000
 
 # Run the application
-CMD ["uv", "run", "python", "app.py", "--data-dir", "/data"]
+CMD ["uv", "run", "python", "app.py"]
