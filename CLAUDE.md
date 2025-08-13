@@ -110,8 +110,7 @@ The project includes Fly.io configuration (`fly.toml`) for deployment with persi
 ├── persistence.py         # State management and Git operations
 ├── s3rn.py               # Resource naming and type system
 ├── repos/                # Synchronized Git repositories
-├── state/                # Persistent state files per relay
-└── y_sweet_sdk/          # Y-Sweet SDK for document operations
+└── state/                # Persistent state files per relay
 ```
 
 ## Testing
