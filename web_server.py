@@ -50,13 +50,10 @@ class StarletteWebServer:
 
             # Parse JSON payload
             try:
-                webhook_data = json.loads(body.decode('utf-8'))
+                webhook_data = json.loads(body.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 logger.error(f"Invalid JSON payload: {e}")
-                return JSONResponse(
-                    {"error": "Invalid JSON payload"},
-                    status_code=400
-                )
+                return JSONResponse({"error": "Invalid JSON payload"}, status_code=400)
 
             # Process webhook
             logger.info(f"Processing webhook: {webhook_data}")
@@ -64,13 +61,10 @@ class StarletteWebServer:
             # Extract payload and process through WebhookProcessor
             payload = webhook_data.get("payload", {})
             change_data = self.webhook_processor.process_webhook(payload)
-            
+
             if change_data is None:
                 logger.error("Failed to process webhook payload")
-                return JSONResponse(
-                    {"error": "Invalid webhook payload"},
-                    status_code=400
-                )
+                return JSONResponse({"error": "Invalid webhook payload"}, status_code=400)
 
             # Queue the processed webhook data
             self.operations_queue.enqueue_document_change(change_data)
@@ -80,10 +74,7 @@ class StarletteWebServer:
         except Exception as e:
             logger.error(f"Error processing webhook: {e}")
             logger.error(f"Webhook processing traceback: {traceback.format_exc()}")
-            return JSONResponse(
-                {"error": "Internal server error"},
-                status_code=500
-            )
+            return JSONResponse({"error": "Internal server error"}, status_code=500)
 
     @noauth
     async def health_check(self, request: Request):
@@ -94,10 +85,10 @@ class StarletteWebServer:
         """Run the server"""
         auth_mode = "disabled"
         if self.webhook_secret:
-            if self.webhook_secret.startswith('whsec_'):
+            if self.webhook_secret.startswith("whsec_"):
                 auth_mode = "Svix HMAC signature validation"
             else:
-                auth_mode = "JWT bearer token validation"
+                auth_mode = "Shared secret validation (exact match)"
 
         logger.info(f"Starting Starlette webhook server on {host}:{port}")
         logger.info(f"Authentication: {auth_mode}")
@@ -105,6 +96,8 @@ class StarletteWebServer:
         uvicorn.run(self.app, host=host, port=port, log_level="info")
 
 
-def create_server(webhook_processor: WebhookProcessor, operations_queue: OperationsQueue, webhook_secret: str) -> StarletteWebServer:
+def create_server(
+    webhook_processor: WebhookProcessor, operations_queue: OperationsQueue, webhook_secret: str
+) -> StarletteWebServer:
     """Create and configure the Starlette webhook server"""
     return StarletteWebServer(webhook_processor, operations_queue, webhook_secret)

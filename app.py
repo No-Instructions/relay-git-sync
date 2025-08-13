@@ -11,7 +11,7 @@ from operations_queue import OperationsQueue
 from web_server import create_server
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -48,9 +48,7 @@ def run_server(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Y-Sweet webhook server with multi-folder git sync"
-    )
+    parser = argparse.ArgumentParser(description="Relay Git Sync app")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
     parser.add_argument(
         "--commit-interval",
@@ -83,7 +81,9 @@ if __name__ == "__main__":
 
     # Validate required relay server URL
     if not args.relay_server_url:
-        print("Error: Relay server URL is required. Set RELAY_SERVER_URL environment variable or use --relay-server-url flag.")
+        print(
+            "Error: Relay server URL is required. Set RELAY_SERVER_URL environment variable or use --relay-server-url flag."
+        )
         print("For management commands (webhook, ssh, api), use: python cli.py")
         exit(1)
 

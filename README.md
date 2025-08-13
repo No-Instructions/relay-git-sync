@@ -36,57 +36,46 @@ Perfect for teams wanting the benefits of collaborative editing with the reliabi
 
 Use the provided docker container as a starting point.
 
+```
+docker pull docker.system3.md/relay-git-sync:latest
+```
+
 ### Authentication Setup
 
 The server supports two authentication methods:
 
-#### Method 1: Bearer Token Authentication (Recommended)
+#### Method 1: Simple Shared Secret (Recommended)
 
-This is the simpler approach using JWT tokens:
+For most deployments, use a shared secret for webhook authentication:
 
-1. **Generate a webhook secret:**
+1. **Generate a shared secret:**
+
 ```bash
-python cli.py webhook keygen
+openssl rand -base64 32
 ```
-This outputs a webhook secret like `whs_<base64-string>`. Set it in your environment:
+
+2. **Set the environment variable:**
+
 ```bash
-export WEBHOOK_SECRET=whs_...
+export WEBHOOK_SECRET="your-generated-secret"
 ```
 
-2. **Generate a webhook token for Relay Server:**
-```bash
-python cli.py webhook token create --name "production"
-```
-This creates a JWT token. You can optionally use the --expires flag to set expiry in days.
+3. **Configure your webhook provider** with:
+   RELAY_SERVER_WEBHOOK_CONFIG=[{
+   "url": "https://your-git-sync-server.com/webhooks",
+   "auth_token": "your-generated-secret"
+   }]
 
-3. **Configure Relay Server webhooks** with the token:
-```json
-[
-  {
-    "prefix": "85a06712-af14-47bc-a859-e8106cc786e8",
-    "url": "https://your-git-sync-server.com/webhooks",
-    "timeout_ms": 5000,
-    "auth_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
-  }
-]
-```
+Note: The server matches the exact value in the Bearer token against WEBHOOK_SECRET.
 
-#### Method 2: Svix HMAC Signatures
+#### Method 2: HMAC Signatures (Webhook Delivery Service)
 
-For Svix-compatible webhook signatures, use a secret starting with `whsec_`:
+Use this method if you are using the webhook delivery service (svix).
+To use webhook signatures, use a secret starting with `whsec_`:
+
 ```bash
 export WEBHOOK_SECRET=whsec_your_signing_secret
 ```
-
-### SSH Key Setup
-
-Generate SSH keys for Git repository access:
-
-```bash
-python cli.py ssh keygen
-```
-
-Add the public key to your Git hosting service (GitHub, GitLab, etc.) as a deploy key with write permissions.
 
 ### Running the Server
 
@@ -95,9 +84,9 @@ Start the webhook server:
 ```bash
 # Set required environment variables
 export RELAY_SERVER_URL=https://your-relay-server.com
-export RELAY_SERVER_API_KEY=your-api-key
-export WEBHOOK_SECRET=whs_...  # From step 1 above
-export RELAY_GIT_DATA_DIR=/path/to/data  # Optional, defaults to current directory
+export RELAY_SERVER_API_KEY=your-server-api-key        # From System 3 team
+export WEBHOOK_SECRET=whs_...                          # From step 1 above
+export RELAY_GIT_DATA_DIR=/path/to/data                # Optional, defaults to current directory
 
 # Start the server
 python app.py --port 8000 --commit-interval 10
@@ -114,14 +103,33 @@ python app.py --port 8000 --commit-interval 10
 
 ### Manual Sync
 
-You can also perform one-time syncs using the CLI:
+You can also perform one-time syncs within your container by using the CLI:
 
 ```bash
-# Sync all folders for a relay
-python cli.py sync --relay-id <relay-uuid> --relay-server-url https://your-relay-server.com
+uv run cli.py sync --relay-id <relay-uuid> --folder-id <folder-uuid>
+```
 
-# Sync specific folder
-python cli.py sync --relay-id <relay-uuid> --folder-id <folder-uuid> --relay-server-url https://your-relay-server.com
+### SSH Key Setup
+
+Relay Git Sync will automatically generate SSH keys on startup.
+You can view the public key within your container by running:
+
+```bash
+uv run cli.py ssh show-pubkey
+```
+
+Add the public key to your Git hosting service (GitHub, GitLab, etc.) as a deploy key with write permissions.
+
+### Configuring a Git Remote
+
+Once you have performed manual sync (or successfully received a folder-related webhook event) you can add a git remote.
+
+```
+# Navigate to the git repo
+cd $RELAY_GIT_DATA_DIR/repos/<relay-guid>/<shared-folder-guid>/
+
+# Add a remote
+git remote add origin <remote url>
 ```
 
 ### Directory Structure

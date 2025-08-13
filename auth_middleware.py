@@ -19,14 +19,14 @@ class DefaultRejectMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         # Check if endpoint lacks explicit auth configuration
-        auth_explicitly_disabled = getattr(request.state, 'auth_explicitly_disabled', False)
-        auth_explicitly_required = getattr(request.state, 'auth_explicitly_required', False)
+        auth_explicitly_disabled = getattr(request.state, "auth_explicitly_disabled", False)
+        auth_explicitly_required = getattr(request.state, "auth_explicitly_required", False)
 
         # If neither @noauth nor @require_auth/@webhook_auth/@api_auth was used, reject
         if not auth_explicitly_disabled and not auth_explicitly_required:
             return JSONResponse(
                 {"error": "Endpoint requires explicit authentication configuration"},
-                status_code=401
+                status_code=401,
             )
 
         return response
@@ -40,8 +40,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.webhook_secret = webhook_secret
         self.auth_mode = self._detect_auth_mode(webhook_secret)
 
-        # Initialize JWT validator if using JWT auth
-        if self.auth_mode == 'jwt_bearer' and webhook_secret:
+        # Initialize JWT validator for API auth (not webhook auth)
+        # JWT is only used for API endpoints with sk_ prefixed secrets
+        if webhook_secret and webhook_secret.startswith("sk_"):
             self.jwt_validator = JWTValidator(webhook_secret)
         else:
             self.jwt_validator = None
@@ -49,60 +50,47 @@ class AuthMiddleware(BaseHTTPMiddleware):
     def _detect_auth_mode(self, webhook_secret):
         """Detect authentication mode based on webhook secret"""
         if not webhook_secret:
-            return 'none'
-        elif webhook_secret.startswith('whsec_'):
-            return 'svix_hmac'
+            return "none"
+        elif webhook_secret.startswith("whsec_"):
+            return "svix_hmac"
         else:
-            return 'jwt_bearer'
+            return "shared_secret"
 
     async def dispatch(self, request: Request, call_next):
         # Always extract and validate authentication if available
         request.state.user = None
         request.state.auth_error = None
 
-        if self.auth_mode == 'none':
+        if self.auth_mode == "none":
             # No authentication configured - endpoints must use @noauth
             pass
-        elif self.auth_mode == 'jwt_bearer':
-            await self._extract_jwt_token(request)
-        elif self.auth_mode == 'svix_hmac':
+        elif self.auth_mode == "svix_hmac":
             await self._validate_svix_signature(request)
+        elif self.auth_mode == "shared_secret":
+            # Only validate as shared secret if it's NOT an sk_ prefixed secret
+            # sk_ secrets are JWT-only and should never be validated as shared secrets
+            if not self.webhook_secret.startswith("sk_"):
+                await self._validate_shared_secret(request)
+
+        # Always try to extract JWT tokens for API endpoints (not webhooks)
+        if self.jwt_validator:
+            await self._extract_jwt_token(request)
 
         response = await call_next(request)
 
         # Check if endpoint lacks proper authentication decorators
-        if (hasattr(response, 'status_code') and
-            response.status_code == 200 and
-            not getattr(request.state, 'user', None) and
-            self.auth_mode != 'none'):
+        if (
+            hasattr(response, "status_code")
+            and response.status_code == 200
+            and not getattr(request.state, "user", None)
+            and self.auth_mode != "none"
+        ):
             # This means an endpoint responded successfully without authentication
             # and without being marked with @noauth - this should be caught by decorators
             # but this is a safety net
             pass
 
         return response
-
-    async def _extract_jwt_token(self, request: Request):
-        """Extract and validate JWT token"""
-        try:
-            auth_header = request.headers.get('Authorization')
-            if not auth_header or not auth_header.startswith('Bearer '):
-                return  # No token provided - let decorators handle
-
-            token = auth_header[7:]  # Remove 'Bearer ' prefix
-            if not token:
-                return
-
-            if self.jwt_validator is None:
-                return
-
-            # Store token and validator for later validation by decorators
-            request.state.jwt_token = token
-            request.state.jwt_validator = self.jwt_validator
-
-        except Exception as e:
-            logger.error(f"Error extracting JWT token: {e}")
-            request.state.auth_error = f"Token extraction error: {e}"
 
     async def _validate_svix_signature(self, request: Request):
         """Validate Svix-style HMAC signature"""
@@ -114,11 +102,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             for name, value in request.headers.items():
                 lower_name = name.lower()
-                if lower_name in ['svix-id', 'webhook-id']:
+                if lower_name in ["svix-id", "webhook-id"]:
                     svix_id = value
-                elif lower_name in ['svix-timestamp', 'webhook-timestamp']:
+                elif lower_name in ["svix-timestamp", "webhook-timestamp"]:
                     svix_timestamp = value
-                elif lower_name in ['svix-signature', 'webhook-signature']:
+                elif lower_name in ["svix-signature", "webhook-signature"]:
                     svix_signature = value
 
             if svix_id is None or svix_timestamp is None or svix_signature is None:
@@ -129,26 +117,63 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             # Validate using Svix SDK
             wh = Webhook(self.webhook_secret)
-            wh.verify(body, {
-                'svix-id': svix_id,
-                'svix-timestamp': svix_timestamp,
-                'svix-signature': svix_signature
-            })
+            wh.verify(
+                body,
+                {
+                    "svix-id": svix_id,
+                    "svix-timestamp": svix_timestamp,
+                    "svix-signature": svix_signature,
+                },
+            )
 
             # Create a minimal user object for Svix auth
-            request.state.user = {
-                'scope': 'webhook',
-                'auth_type': 'svix',
-                'svix_id': svix_id
-            }
+            request.state.user = {"scope": "webhook", "auth_type": "svix", "svix_id": svix_id}
 
         except Exception as e:
             logger.error(f"Svix signature validation error: {e}")
             request.state.auth_error = f"Signature validation failed: {e}"
 
+    async def _validate_shared_secret(self, request: Request):
+        """Validate shared secret in Authorization header (exact match)"""
+        try:
+            auth_header = request.headers.get("Authorization")
+            if not auth_header or not auth_header.startswith("Bearer "):
+                return  # No token provided - let decorators handle
+
+            provided_secret = auth_header[7:]  # Remove 'Bearer ' prefix
+
+            # Exact match comparison
+            if provided_secret == self.webhook_secret:
+                request.state.user = {"scope": "webhook", "auth_type": "shared_secret"}
+            else:
+                request.state.auth_error = "Invalid shared secret"
+        except Exception as e:
+            logger.error(f"Error validating shared secret: {e}")
+            request.state.auth_error = f"Shared secret validation error: {e}"
+
+    async def _extract_jwt_token(self, request: Request):
+        """Extract JWT token for API endpoints only (not webhooks)"""
+        try:
+            auth_header = request.headers.get("Authorization")
+            if not auth_header or not auth_header.startswith("Bearer "):
+                return  # No token provided - let decorators handle
+
+            token = auth_header[7:]  # Remove 'Bearer ' prefix
+            if not token:
+                return
+
+            # Store token and validator for later validation by decorators
+            request.state.jwt_token = token
+            request.state.jwt_validator = self.jwt_validator
+
+        except Exception as e:
+            logger.error(f"Error extracting JWT token: {e}")
+            request.state.auth_error = f"Token extraction error: {e}"
+
 
 def noauth(func: Callable) -> Callable:
     """Decorator to explicitly allow unauthenticated access"""
+
     @wraps(func)
     async def wrapper(*args, **kwargs):
         # Handle both instance methods (self, request) and standalone functions (request)
@@ -161,10 +186,10 @@ def noauth(func: Callable) -> Callable:
             self_arg = None
         else:
             raise ValueError("Expected 1 or 2 positional arguments")
-            
+
         # Mark request as explicitly allowing no auth
         request.state.auth_explicitly_disabled = True
-        
+
         # Call function with appropriate arguments
         if self_arg is not None:
             return await func(self_arg, request)
@@ -176,9 +201,11 @@ def noauth(func: Callable) -> Callable:
     return wrapper
 
 
-def require_auth(scopes: Optional[List[str]] = None,
-                roles: Optional[List[str]] = None,
-                permissions: Optional[List[str]] = None) -> Callable:
+def require_auth(
+    scopes: Optional[List[str]] = None,
+    roles: Optional[List[str]] = None,
+    permissions: Optional[List[str]] = None,
+) -> Callable:
     """
     Decorator to require authentication with optional claims matching
 
@@ -187,6 +214,7 @@ def require_auth(scopes: Optional[List[str]] = None,
         roles: Required roles (e.g., ['admin', 'webhook_handler'])
         permissions: Required permissions (e.g., ['sync:read', 'sync:write'])
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -200,26 +228,27 @@ def require_auth(scopes: Optional[List[str]] = None,
                 self_arg = None
             else:
                 raise ValueError("Expected 1 or 2 positional arguments")
-            
+
             # Mark that this endpoint has explicit auth requirements
             request.state.auth_explicitly_required = True
 
-            # Validate JWT token if present
-            jwt_token = getattr(request.state, 'jwt_token', None)
-            jwt_validator = getattr(request.state, 'jwt_validator', None)
-            user = getattr(request.state, 'user', None)
-            auth_error = getattr(request.state, 'auth_error', None)
+            # Validate JWT token if present and this is an API endpoint
+            jwt_token = getattr(request.state, "jwt_token", None)
+            jwt_validator = getattr(request.state, "jwt_validator", None)
+            user = getattr(request.state, "user", None)
+            auth_error = getattr(request.state, "auth_error", None)
 
-            # If we have a JWT token but no user, validate it now with the correct scope
-            if jwt_token and not user and not auth_error and jwt_validator and scopes:
-                # Validate token with appropriate audience based on required scopes
-                if 'webhook' in scopes:
-                    is_valid, payload, error_msg = jwt_validator.validate_webhook_token(jwt_token)
-                elif 'api' in scopes:
-                    is_valid, payload, error_msg = jwt_validator.validate_api_token(jwt_token)
-                else:
-                    is_valid, payload, error_msg = False, None, "Unknown scope for JWT validation"
-                
+            # If we have a JWT token but no user, validate it now for API endpoints only
+            if (
+                jwt_token
+                and not user
+                and not auth_error
+                and jwt_validator
+                and scopes
+                and "api" in scopes
+            ):
+                is_valid, payload, error_msg = jwt_validator.validate_api_token(jwt_token)
+
                 if is_valid:
                     request.state.user = payload
                     user = payload
@@ -230,36 +259,35 @@ def require_auth(scopes: Optional[List[str]] = None,
                 error_detail = "Authentication required"
                 if auth_error:
                     error_detail = f"Authentication failed: {auth_error}"
-                return JSONResponse(
-                    {"error": error_detail},
-                    status_code=401
-                )
+                return JSONResponse({"error": error_detail}, status_code=401)
 
             # Validate scopes
             if scopes:
-                user_scope = user.get('scope')
+                user_scope = user.get("scope")
                 if not user_scope or user_scope not in scopes:
                     return JSONResponse(
                         {"error": f"Insufficient scope. Required: {scopes}, Got: {user_scope}"},
-                        status_code=403
+                        status_code=403,
                     )
 
             # Validate roles
             if roles:
-                user_roles = user.get('roles', [])
+                user_roles = user.get("roles", [])
                 if not any(role in user_roles for role in roles):
                     return JSONResponse(
                         {"error": f"Insufficient roles. Required: {roles}, Got: {user_roles}"},
-                        status_code=403
+                        status_code=403,
                     )
 
             # Validate permissions
             if permissions:
-                user_permissions = user.get('permissions', [])
+                user_permissions = user.get("permissions", [])
                 if not any(perm in user_permissions for perm in permissions):
                     return JSONResponse(
-                        {"error": f"Insufficient permissions. Required: {permissions}, Got: {user_permissions}"},
-                        status_code=403
+                        {
+                            "error": f"Insufficient permissions. Required: {permissions}, Got: {user_permissions}"
+                        },
+                        status_code=403,
                     )
 
             # Call function with appropriate arguments
@@ -267,25 +295,27 @@ def require_auth(scopes: Optional[List[str]] = None,
                 return await func(self_arg, request)
             else:
                 return await func(request)
+
         return wrapper
+
     return decorator
 
 
 def default_reject_handler(request: Request) -> JSONResponse:
     """Default handler for endpoints without explicit auth decorators"""
     return JSONResponse(
-        {"error": "Endpoint requires explicit authentication configuration"},
-        status_code=401
+        {"error": "Endpoint requires explicit authentication configuration"}, status_code=401
     )
 
 
 # Convenience decorators for common use cases
 def webhook_auth(func: Callable) -> Callable:
-    """Shorthand for webhook endpoint authentication"""
-    return require_auth(scopes=['webhook'])(func)
+    """Shorthand for webhook endpoint authentication (Svix HMAC or shared secret only, no JWT)"""
+    return require_auth(scopes=["webhook"])(func)
 
 
-def api_auth(roles: Optional[List[str]] = None,
-            permissions: Optional[List[str]] = None) -> Callable:
+def api_auth(
+    roles: Optional[List[str]] = None, permissions: Optional[List[str]] = None
+) -> Callable:
     """Shorthand for API endpoint authentication"""
-    return require_auth(scopes=['api'], roles=roles, permissions=permissions)
+    return require_auth(scopes=["api"], roles=roles, permissions=permissions)
