@@ -258,15 +258,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Sync all folders in a relay
-  python cli.py sync --relay-id abc123... --relay-server-url ys://server:8080
-
   # Sync specific folder (folder-id is just the folder UUID)
-  python cli.py sync --relay-id abc123... --folder-id def456... --relay-server-url ys://server:8080
+  python cli.py sync --relay-id abc123... --folder-id def456...
 
   # Generate webhook secret and tokens
   python cli.py webhook keygen
-  python cli.py webhook token create --expires 90d --name "relay-prod"
+  python cli.py webhook token create --name "relay-prod"
 
   # SSH key management
   python cli.py ssh show-pubkey
@@ -274,7 +271,7 @@ Examples:
 
   # API token management
   python cli.py api keygen
-  python cli.py api token create --expires 7d --name "deploy-script"
+  python cli.py api token create --name "deploy-script"
         """
     )
     
