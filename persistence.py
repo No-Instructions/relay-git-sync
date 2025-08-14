@@ -473,7 +473,30 @@ class PersistenceManager:
             print(
                 f"Using existing git repository for folder {folder_id} in relay {relay_id} at {folder_path}"
             )
+            
+            # If repo exists and has remotes, pull latest changes
+            git_repo = self.git_repos[repo_key]
+            if git_repo.remotes:
+                self._pull_from_remote(repo_key, git_repo)
+                
         except git.InvalidGitRepositoryError:
+            # Repository doesn't exist locally, check if we should clone from remote
+            connector = self.git_config.get_connector_for_folder(relay_id, folder_id)
+            if connector and connector.url:
+                # Clone from remote
+                try:
+                    print(f"Cloning repository from {connector.url} for folder {folder_id}")
+                    self.git_repos[repo_key] = git.Repo.clone_from(
+                        connector.url, 
+                        folder_path,
+                        branch=connector.branch
+                    )
+                    print(f"Successfully cloned repository to {folder_path}")
+                    return self.git_repos[repo_key]
+                except Exception as e:
+                    logger.warning(f"Failed to clone repository {connector.url}: {e}")
+                    # Fall through to create new repo
+            
             # Create new repo
             self.git_repos[repo_key] = git.Repo.init(folder_path, initial_branch="main")
             print(
@@ -601,6 +624,10 @@ class PersistenceManager:
             # Check each folder repository for changes
             for repo_key, git_repo in self.git_repos.items():
                 if git_repo.is_dirty() or git_repo.untracked_files:
+                    # Pull latest changes before committing if remote is configured
+                    if git_repo.remotes:
+                        self._pull_from_remote(repo_key, git_repo)
+                    
                     # Add all changes using safe git operation
                     self._safe_git_operation(lambda: git_repo.git.add(A=True))
 
@@ -622,6 +649,74 @@ class PersistenceManager:
             logger.error(f"Error committing to git: {e}")
             logger.error(f"Git commit traceback: {traceback.format_exc()}")
             return False
+
+    def _pull_from_remote(self, repo_key: str, git_repo: git.Repo):
+        """Pull latest changes from remote repository using rebase"""
+        try:
+            # Check if any remotes are configured
+            if not git_repo.remotes:
+                logger.debug(f"No remotes configured for repository {repo_key}, skipping pull")
+                return
+                
+            # Get the default remote (usually 'origin')
+            origin = (
+                git_repo.remotes.origin
+                if "origin" in [r.name for r in git_repo.remotes]
+                else git_repo.remotes[0]
+            )
+            
+            # Check if we have any local commits that need to be preserved
+            try:
+                current_branch = git_repo.active_branch
+                tracking_branch = current_branch.tracking_branch()
+                
+                if tracking_branch is None:
+                    # No tracking branch set up yet, just fetch
+                    print(f"Fetching from {origin.name} for repository {repo_key}")
+                    self._safe_git_operation(lambda: origin.fetch())
+                    return
+                    
+                # Check if local branch is ahead of remote
+                ahead_behind = git_repo.git.rev_list('--left-right', '--count', 
+                                                   f'{tracking_branch.name}...{current_branch.name}')
+                behind, ahead = ahead_behind.split('\t')
+                
+                if int(behind) > 0:
+                    if int(ahead) > 0:
+                        # Both ahead and behind - need to rebase
+                        print(f"Pulling with rebase from {origin.name} for repository {repo_key}")
+                        try:
+                            self._safe_git_operation(lambda: git_repo.git.pull('--rebase', origin.name, current_branch.name))
+                        except git.exc.GitCommandError as rebase_error:
+                            if "CONFLICT" in str(rebase_error) or "merge conflict" in str(rebase_error).lower():
+                                logger.error(f"Merge conflict during rebase for {repo_key}. Manual resolution required.")
+                                logger.error(f"Run 'git status' in {git_repo.working_dir} to see conflicted files")
+                                # Abort the rebase to return to clean state
+                                try:
+                                    git_repo.git.rebase('--abort')
+                                    logger.info(f"Aborted rebase for {repo_key}, returning to previous state")
+                                except:
+                                    pass
+                                raise Exception(f"Merge conflict in {repo_key} - manual resolution required")
+                            else:
+                                raise rebase_error
+                    else:
+                        # Only behind - fast-forward pull
+                        print(f"Fast-forward pull from {origin.name} for repository {repo_key}")
+                        self._safe_git_operation(lambda: git_repo.git.pull(origin.name, current_branch.name))
+                else:
+                    # Up to date or only ahead
+                    print(f"Repository {repo_key} is up to date with remote")
+                    
+            except Exception as e:
+                logger.warning(f"Error checking branch status for {repo_key}: {e}")
+                # Fallback to simple fetch
+                print(f"Fetching from {origin.name} for repository {repo_key}")
+                self._safe_git_operation(lambda: origin.fetch())
+                
+        except Exception as e:
+            logger.error(f"Error pulling from remote for repository {repo_key}: {e}")
+            logger.error(f"Pull traceback: {traceback.format_exc()}")
 
     def _push_to_remote(self, repo_key: str, git_repo: git.Repo):
         """Push commits to remote repository if configured"""
@@ -650,11 +745,33 @@ class PersistenceManager:
                         f"Git push (set upstream) for repository {repo_key} to {origin.name}/{current_branch.name}"
                     )
                 else:
-                    # Regular push
-                    self._safe_git_operation(lambda: origin.push())
-                    print(
-                        f"Git push for repository {repo_key} to {origin.name}/{current_branch.name}"
-                    )
+                    # Push with --force-with-lease for safer force pushing
+                    # This ensures we don't overwrite changes that we haven't seen
+                    try:
+                        self._safe_git_operation(lambda: origin.push())
+                        print(
+                            f"Git push for repository {repo_key} to {origin.name}/{current_branch.name}"
+                        )
+                    except git.exc.GitCommandError as push_error:
+                        if "non-fast-forward" in str(push_error) or "rejected" in str(push_error):
+                            # Try force-with-lease as fallback
+                            logger.info(f"Regular push rejected, trying force-with-lease for {repo_key}")
+                            try:
+                                self._safe_git_operation(
+                                    lambda: git_repo.git.push('--force-with-lease', origin.name, current_branch.name)
+                                )
+                                print(
+                                    f"Git force-with-lease push for repository {repo_key} to {origin.name}/{current_branch.name}"
+                                )
+                            except git.exc.GitCommandError as force_error:
+                                if "stale info" in str(force_error) or "would clobber" in str(force_error):
+                                    logger.error(f"Force-with-lease rejected for {repo_key}: remote has newer commits")
+                                    logger.error(f"Run 'git pull --rebase' in {git_repo.working_dir} and try again")
+                                    raise Exception(f"Remote has newer commits for {repo_key} - pull required")
+                                else:
+                                    raise force_error
+                        else:
+                            raise push_error
 
             except git.exc.GitCommandError as e:
                 # Handle common push errors gracefully
