@@ -8,6 +8,7 @@ import logging
 import traceback
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any, Tuple
+from pycrdt import Map
 from models import (
     SyncOperation,
     SyncType,
