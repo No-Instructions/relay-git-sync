@@ -683,31 +683,41 @@ class PersistenceManager:
                 
                 if int(behind) > 0:
                     if int(ahead) > 0:
-                        # Both ahead and behind - rebase with automatic conflict resolution
-                        print(f"Pulling with rebase from {origin.name} for repository {repo_key} (auto-resolving conflicts)")
+                        # Both ahead and behind - need to merge remote changes
+                        print(f"Pulling from {origin.name} for repository {repo_key} with conflict resolution")
                         try:
-                            # Use rebase with strategy 'ours' to favor our changes in conflicts
+                            # Try regular rebase first
                             self._safe_git_operation(
-                                lambda: git_repo.git.pull('--rebase', '-X', 'ours', origin.name, current_branch.name)
+                                lambda: git_repo.git.pull('--rebase', origin.name, current_branch.name)
                             )
-                            print(f"Successfully rebased {repo_key} with conflicts resolved in our favor")
+                            print(f"Successfully rebased {repo_key}")
                         except git.exc.GitCommandError as rebase_error:
                             if "CONFLICT" in str(rebase_error) or "merge conflict" in str(rebase_error).lower():
-                                logger.info(f"Merge conflicts detected for {repo_key}, resolving in our favor...")
-                                # Try to continue rebase with our strategy
+                                logger.info(f"Merge conflicts detected for {repo_key}, resolving conflicts in our favor for our files...")
+                                
+                                # Resolve conflicts by checking each conflicted file
+                                self._resolve_conflicts_in_our_favor(git_repo, repo_key)
+                                
+                                # Continue the rebase
                                 try:
-                                    # Add all files (resolves conflicts in favor of our changes)
-                                    git_repo.git.add('.')
                                     git_repo.git.rebase('--continue')
                                     print(f"Resolved conflicts and continued rebase for {repo_key}")
                                 except git.exc.GitCommandError:
-                                    # If rebase --continue fails, abort and use merge strategy instead
-                                    logger.info(f"Rebase failed, falling back to merge strategy for {repo_key}")
+                                    # If rebase --continue fails, abort and try merge instead
+                                    logger.info(f"Rebase failed, trying merge strategy for {repo_key}")
                                     git_repo.git.rebase('--abort')
+                                    
+                                    # Try merge approach
                                     self._safe_git_operation(
-                                        lambda: git_repo.git.pull('-X', 'ours', origin.name, current_branch.name)
+                                        lambda: git_repo.git.pull(origin.name, current_branch.name)
                                     )
-                                    print(f"Merged remote changes with conflicts resolved in our favor for {repo_key}")
+                                    
+                                    # Resolve any merge conflicts
+                                    if git_repo.git.diff('--name-only', '--diff-filter=U'):
+                                        self._resolve_conflicts_in_our_favor(git_repo, repo_key)
+                                        git_repo.git.commit('--no-edit')
+                                    
+                                    print(f"Merged remote changes with conflicts resolved for {repo_key}")
                             else:
                                 raise rebase_error
                     else:
@@ -727,6 +737,68 @@ class PersistenceManager:
         except Exception as e:
             logger.error(f"Error pulling from remote for repository {repo_key}: {e}")
             logger.error(f"Pull traceback: {traceback.format_exc()}")
+
+    def _resolve_conflicts_in_our_favor(self, git_repo: git.Repo, repo_key: str):
+        """Resolve merge conflicts by keeping our version for files within our managed prefix"""
+        try:
+            # Get list of conflicted files
+            conflicted_files = git_repo.git.diff('--name-only', '--diff-filter=U').splitlines()
+            
+            if not conflicted_files:
+                return
+                
+            logger.info(f"Resolving {len(conflicted_files)} conflicted files for {repo_key}")
+            
+            # Parse repo_key to get relay_id and folder_id
+            relay_id, folder_id = repo_key.split('/', 1)
+            
+            # Get our managed prefix if any
+            connector = self.git_config.get_connector_for_folder(relay_id, folder_id)
+            our_prefix = connector.prefix if connector else ""
+            
+            resolved_count = 0
+            skipped_count = 0
+            
+            for file_path in conflicted_files:
+                # Check if this file is within our managed prefix
+                is_our_file = False
+                
+                if our_prefix:
+                    # If we have a prefix, only resolve conflicts for files within it
+                    is_our_file = file_path.startswith(our_prefix + "/") or file_path == our_prefix
+                else:
+                    # If no prefix, we manage all files (but be more conservative)
+                    # Only auto-resolve files that look like content files
+                    is_our_file = (
+                        file_path.endswith(('.md', '.txt', '.canvas', '.json')) or
+                        not file_path.startswith('.') or  # Skip dotfiles
+                        file_path == '.gitignore'  # Except .gitignore which we manage
+                    )
+                
+                if is_our_file:
+                    # Resolve in our favor - use our version
+                    try:
+                        git_repo.git.checkout('--ours', file_path)
+                        git_repo.git.add(file_path)
+                        resolved_count += 1
+                        logger.debug(f"Resolved conflict for {file_path} in favor of our version")
+                    except Exception as e:
+                        logger.warning(f"Failed to resolve conflict for {file_path}: {e}")
+                else:
+                    # Not our file - use their version to preserve external changes
+                    try:
+                        git_repo.git.checkout('--theirs', file_path)
+                        git_repo.git.add(file_path)
+                        skipped_count += 1
+                        logger.debug(f"Resolved conflict for {file_path} in favor of their version (external file)")
+                    except Exception as e:
+                        logger.warning(f"Failed to resolve conflict for {file_path}: {e}")
+            
+            logger.info(f"Conflict resolution for {repo_key}: {resolved_count} files kept ours, {skipped_count} files kept theirs")
+            
+        except Exception as e:
+            logger.error(f"Error during conflict resolution for {repo_key}: {e}")
+            logger.error(f"Conflict resolution traceback: {traceback.format_exc()}")
 
     def _push_to_remote(self, repo_key: str, git_repo: git.Repo):
         """Push commits to remote repository if configured"""
@@ -755,7 +827,7 @@ class PersistenceManager:
                         f"Git push (set upstream) for repository {repo_key} to {origin.name}/{current_branch.name}"
                     )
                 else:
-                    # Since we're the source of truth, be more aggressive with pushing
+                    # Regular push - don't force to avoid clobbering other commits
                     try:
                         self._safe_git_operation(lambda: origin.push())
                         print(
@@ -763,28 +835,18 @@ class PersistenceManager:
                         )
                     except git.exc.GitCommandError as push_error:
                         if "non-fast-forward" in str(push_error) or "rejected" in str(push_error):
-                            # As source of truth, force push our changes
-                            logger.info(f"Regular push rejected, force pushing as source of truth for {repo_key}")
+                            # Push rejected - this means there are remote commits we haven't seen
+                            # Pull first to merge remote changes, then push again
+                            logger.info(f"Push rejected for {repo_key}, pulling remote changes first")
+                            self._pull_from_remote(repo_key, git_repo)
+                            
+                            # Try pushing again after pull
                             try:
-                                # Try force-with-lease first (safer)
-                                self._safe_git_operation(
-                                    lambda: git_repo.git.push('--force-with-lease', origin.name, current_branch.name)
-                                )
-                                print(
-                                    f"Git force-with-lease push for repository {repo_key} to {origin.name}/{current_branch.name}"
-                                )
-                            except git.exc.GitCommandError as force_lease_error:
-                                if "stale info" in str(force_lease_error) or "would clobber" in str(force_lease_error):
-                                    # Force-with-lease failed, use regular force push as source of truth
-                                    logger.info(f"Force-with-lease failed, using force push as source of truth for {repo_key}")
-                                    self._safe_git_operation(
-                                        lambda: git_repo.git.push('--force', origin.name, current_branch.name)
-                                    )
-                                    print(
-                                        f"Git force push for repository {repo_key} to {origin.name}/{current_branch.name} (source of truth)"
-                                    )
-                                else:
-                                    raise force_lease_error
+                                self._safe_git_operation(lambda: origin.push())
+                                print(f"Git push successful after pull for repository {repo_key}")
+                            except git.exc.GitCommandError:
+                                # If still failing, there might be an issue - log but don't force
+                                logger.warning(f"Push still failing for {repo_key} after pull, skipping")
                         else:
                             raise push_error
 
