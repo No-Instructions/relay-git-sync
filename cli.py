@@ -228,6 +228,7 @@ def git_connector_list_command(args):
             print(f"   URL: {connector.url}")
             print(f"   Branch: {connector.branch}")
             print(f"   Remote: {connector.remote_name}")
+            print(f"   Prefix: {connector.prefix or '(root)'}")
             if i < len(git_config.connectors):
                 print()
         
@@ -249,7 +250,8 @@ def git_connector_add_command(args):
             relay_id=args.relay_id,
             url=args.url,
             branch=args.branch,
-            remote_name=args.remote_name
+            remote_name=args.remote_name,
+            prefix=args.prefix
         )
         
         # Add to configuration
@@ -261,6 +263,7 @@ def git_connector_add_command(args):
         print(f"  URL: {connector.url}")
         print(f"  Branch: {connector.branch}")
         print(f"  Remote: {connector.remote_name}")
+        print(f"  Prefix: {connector.prefix or '(root)'}")
         print()
         print(f"Note: Configuration is in memory only.")
         print(f"Manually edit: {git_config.get_config_file_path()}")
@@ -391,7 +394,7 @@ Examples:
   # Git connector management
   python cli.py git init
   python cli.py git list
-  python cli.py git add --relay-id abc123... --folder-id def456... --url https://github.com/user/repo.git
+  python cli.py git add --relay-id abc123... --folder-id def456... --url https://github.com/user/repo.git --prefix docs
   python cli.py git sync  # Create repos from TOML config
 
   # Webhook authentication (shared secret or Svix HMAC only)
@@ -488,6 +491,7 @@ Git Connectors:
     git_add_parser.add_argument("--url", required=True, help="Git repository URL")
     git_add_parser.add_argument("--branch", default="main", help="Git branch (default: main)")
     git_add_parser.add_argument("--remote-name", default="origin", help="Git remote name (default: origin)")
+    git_add_parser.add_argument("--prefix", default="", help="Subdirectory within repository for content (default: empty)")
     git_add_parser.set_defaults(func=git_connector_add_command)
 
     # git remove command

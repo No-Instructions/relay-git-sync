@@ -463,9 +463,9 @@ class SyncEngine:
                 metadata=metadata,
             )
 
-        # Build path within folder subdirectory
+        # Build path within folder subdirectory, including any configured prefix
         folder_uuid = S3RN.get_folder_id(folder_resource)
-        folder_path = self.persistence_manager.get_folder_path(relay_id, folder_uuid)
+        folder_path = self.persistence_manager.get_folder_path_with_prefix(relay_id, folder_uuid)
         full_path = self.persistence_manager._sanitize_path(path, folder_path)
 
         # Case 1: File exists locally
@@ -760,9 +760,9 @@ class SyncEngine:
         """Delete local files that no longer exist remotely."""
         deletes = []
 
-        # Get folder directory
+        # Get folder directory with prefix applied
         folder_uuid = S3RN.get_folder_id(folder_resource)
-        folder_path = self.persistence_manager.get_folder_path(relay_id, folder_uuid)
+        folder_path = self.persistence_manager.get_folder_path_with_prefix(relay_id, folder_uuid)
         if not os.path.exists(folder_path):
             return deletes
 

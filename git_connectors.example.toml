@@ -1,29 +1,32 @@
 # Git Connector Configuration
 # Configure git repositories to sync with shared folders
 
-# Example 1: Public GitHub repository
+# Example 1: Public GitHub repository (sync to root)
 [[git_connector]]
 shared_folder_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 relay_id = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 url = "https://github.com/example/repository.git"
 branch = "main"
 remote_name = "origin"
+prefix = ""  # Sync to repository root
 
-# Example 2: Private repository with SSH authentication
+# Example 2: Private repository with SSH authentication (sync to subdirectory)
 [[git_connector]]
 shared_folder_id = "12345678-1234-5678-9abc-123456789abc"
 relay_id = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 url = "git@github.com:example/private-repo.git"
 branch = "develop"
 remote_name = "origin"
+prefix = "content/docs"  # Sync to content/docs/ subdirectory
 
-# Example 3: GitLab repository
+# Example 3: GitLab repository (sync to docs folder)
 [[git_connector]]
 shared_folder_id = "87654321-4321-8765-cba9-987654321cba"
 relay_id = "another-relay-uuid-here-12345678"
 url = "https://gitlab.com/example/project.git"
 branch = "main"
 remote_name = "gitlab"
+prefix = "documentation"  # Sync to documentation/ subdirectory
 
 # Configuration Notes:
 # - shared_folder_id: UUID of the shared folder in the relay
@@ -31,6 +34,12 @@ remote_name = "gitlab"
 # - url: Git repository URL (supports HTTPS and SSH)
 # - branch: Target branch for pushes (default: "main")
 # - remote_name: Name of the git remote (default: "origin")
+# - prefix: Subdirectory within repository for content (default: "", optional)
+#
+# Prefix Examples:
+# - prefix = ""            # Sync to repository root
+# - prefix = "docs"        # Sync to docs/ subdirectory
+# - prefix = "content/posts" # Sync to content/posts/ subdirectory
 #
 # SSH Authentication:
 # Set SSH_PRIVATE_KEY environment variable with your private key

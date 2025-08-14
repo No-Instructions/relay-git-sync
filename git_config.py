@@ -27,6 +27,7 @@ class GitConnector:
     url: str
     branch: str = "main"
     remote_name: str = "origin"
+    prefix: str = ""
     
     def __post_init__(self):
         """Validate the configuration after initialization"""
@@ -85,7 +86,8 @@ class GitConnectorConfig:
                         relay_id=connector_data["relay_id"],
                         url=connector_data["url"],
                         branch=connector_data.get("branch", "main"),
-                        remote_name=connector_data.get("remote_name", "origin")
+                        remote_name=connector_data.get("remote_name", "origin"),
+                        prefix=connector_data.get("prefix", "")
                     )
                     self.connectors.append(connector)
                     logger.info(
@@ -144,7 +146,8 @@ class GitConnectorConfig:
                         "relay_id": c.relay_id,
                         "url": c.url,
                         "branch": c.branch,
-                        "remote_name": c.remote_name
+                        "remote_name": c.remote_name,
+                        "prefix": c.prefix
                     }
                     for c in self.connectors
                 ]
@@ -214,6 +217,7 @@ relay_id = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 url = "https://github.com/example/repository.git"
 branch = "main"
 remote_name = "origin"
+prefix = ""  # Optional: subdirectory within repo (e.g., "docs" or "content/posts")
 
 # [[git_connector]]
 # shared_folder_id = "another-folder-uuid"
@@ -221,6 +225,7 @@ remote_name = "origin"
 # url = "git@github.com:example/private-repo.git"
 # branch = "develop"
 # remote_name = "origin"
+# prefix = "content/docs"  # Sync to content/docs/ subdirectory
 '''
         
         config_path = Path(self.config_file)

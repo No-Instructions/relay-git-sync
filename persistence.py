@@ -371,6 +371,18 @@ class PersistenceManager:
     def get_folder_path(self, relay_id: str, folder_uuid: str) -> str:
         """Get the folder path within relay repository"""
         return os.path.join(self.get_repo_dir(relay_id), folder_uuid)
+    
+    def get_folder_path_with_prefix(self, relay_id: str, folder_uuid: str) -> str:
+        """Get the folder path within relay repository, including any configured prefix"""
+        base_path = self.get_folder_path(relay_id, folder_uuid)
+        
+        # Check if there's a prefix configured for this folder
+        connector = self.git_config.get_connector_for_folder(relay_id, folder_uuid)
+        if connector and connector.prefix:
+            # Apply the prefix - it will be sanitized when used with _sanitize_path
+            return os.path.join(base_path, connector.prefix)
+        
+        return base_path
 
     def load_persistent_data(self, relay_id: str):
         """Load document hashes, filemeta, and local state for a specific relay"""
@@ -763,8 +775,8 @@ class PersistenceManager:
         relay_id = S3RN.get_relay_id(document_resource)
         folder_uuid = S3RN.get_folder_id(document_resource)
 
-        # Build full path within folder subdirectory
-        folder_path = os.path.join(self.get_repo_dir(relay_id), folder_uuid)
+        # Build full path within folder subdirectory, including any configured prefix
+        folder_path = self.get_folder_path_with_prefix(relay_id, folder_uuid)
         full_path = self._sanitize_path(path, folder_path)
 
         # Create parent directories if needed
@@ -796,8 +808,8 @@ class PersistenceManager:
         relay_id = S3RN.get_relay_id(document_resource)
         folder_uuid = S3RN.get_folder_id(document_resource)
 
-        # Build full path within folder subdirectory
-        folder_path = os.path.join(self.get_repo_dir(relay_id), folder_uuid)
+        # Build full path within folder subdirectory, including any configured prefix
+        folder_path = self.get_folder_path_with_prefix(relay_id, folder_uuid)
         full_path = self._sanitize_path(path, folder_path)
 
         # Create parent directories if needed
@@ -823,7 +835,7 @@ class PersistenceManager:
         folder_uuid = S3RN.get_folder_id(folder_resource)
 
         # Build full path within folder subdirectory
-        folder_path = os.path.join(self.get_repo_dir(folder_resource), folder_uuid)
+        folder_path = self.get_folder_path_with_prefix(relay_id, folder_uuid)
         full_path = self._sanitize_path(path, folder_path)
 
         # Create directory structure
@@ -839,8 +851,8 @@ class PersistenceManager:
         relay_id = S3RN.get_relay_id(document_resource)
         folder_uuid = S3RN.get_folder_id(document_resource)
 
-        # Build full paths within folder subdirectory
-        folder_path = os.path.join(self.get_repo_dir(relay_id), folder_uuid)
+        # Build full paths within folder subdirectory, including any configured prefix
+        folder_path = self.get_folder_path_with_prefix(relay_id, folder_uuid)
         old_full_path = self._sanitize_path(from_path, folder_path)
         new_full_path = self._sanitize_path(to_path, folder_path)
 
@@ -866,8 +878,8 @@ class PersistenceManager:
         relay_id = S3RN.get_relay_id(folder_resource)
         folder_uuid = S3RN.get_folder_id(folder_resource)
 
-        # Build full path within folder subdirectory
-        folder_path = os.path.join(self.get_repo_dir(relay_id), folder_uuid)
+        # Build full path within folder subdirectory, including any configured prefix
+        folder_path = self.get_folder_path_with_prefix(relay_id, folder_uuid)
         full_path = self._sanitize_path(path, folder_path)
 
         if os.path.exists(full_path):
