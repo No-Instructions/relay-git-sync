@@ -21,7 +21,7 @@ class TestPubkeyEndpoint:
         self.webhook_processor = Mock(spec=WebhookProcessor)
         self.operations_queue = Mock(spec=OperationsQueue)
         self.webhook_secret = "test_secret"
-        
+
         # Create a temporary directory for persistence manager
         self.temp_dir = tempfile.mkdtemp()
         self.persistence_manager = Mock(spec=PersistenceManager)
@@ -29,6 +29,7 @@ class TestPubkeyEndpoint:
     def teardown_method(self):
         """Cleanup test fixtures"""
         import shutil
+
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_pubkey_endpoint_with_ssh_key(self):
@@ -37,24 +38,24 @@ class TestPubkeyEndpoint:
         mock_ssh_manager = Mock(spec=SSHKeyManager)
         test_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDataHereForTesting"
         mock_ssh_manager.get_public_key.return_value = test_public_key
-        
+
         # Set up persistence manager with SSH key manager
         self.persistence_manager.ssh_key_manager = mock_ssh_manager
-        
+
         # Create web server
         server = StarletteWebServer(
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client
         client = TestClient(server.app)
-        
+
         # Make request to pubkey endpoint
         response = client.get("/api/pubkey")
-        
+
         # Verify response
         assert response.status_code == 200
         data = response.json()
@@ -69,24 +70,24 @@ class TestPubkeyEndpoint:
         mock_ssh_manager = Mock(spec=SSHKeyManager)
         test_public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQExampleRSAKeyDataHere"
         mock_ssh_manager.get_public_key.return_value = test_public_key
-        
+
         # Set up persistence manager with SSH key manager
         self.persistence_manager.ssh_key_manager = mock_ssh_manager
-        
+
         # Create web server
         server = StarletteWebServer(
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client
         client = TestClient(server.app)
-        
+
         # Make request to pubkey endpoint
         response = client.get("/api/pubkey")
-        
+
         # Verify response
         assert response.status_code == 200
         data = response.json()
@@ -97,21 +98,21 @@ class TestPubkeyEndpoint:
         """Test pubkey endpoint when SSH key is not configured"""
         # Set up persistence manager without SSH key manager
         self.persistence_manager.ssh_key_manager = None
-        
+
         # Create web server
         server = StarletteWebServer(
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client
         client = TestClient(server.app)
-        
+
         # Make request to pubkey endpoint
         response = client.get("/api/pubkey")
-        
+
         # Verify error response
         assert response.status_code == 400
         data = response.json()
@@ -123,24 +124,24 @@ class TestPubkeyEndpoint:
         # Mock SSH key manager that throws an error
         mock_ssh_manager = Mock(spec=SSHKeyManager)
         mock_ssh_manager.get_public_key.side_effect = ValueError("Invalid key format")
-        
+
         # Set up persistence manager with SSH key manager
         self.persistence_manager.ssh_key_manager = mock_ssh_manager
-        
+
         # Create web server
         server = StarletteWebServer(
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client
         client = TestClient(server.app)
-        
+
         # Make request to pubkey endpoint
         response = client.get("/api/pubkey")
-        
+
         # Verify error response
         assert response.status_code == 500
         data = response.json()
@@ -153,24 +154,24 @@ class TestPubkeyEndpoint:
         mock_ssh_manager = Mock(spec=SSHKeyManager)
         test_public_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYExampleECDSAKey"
         mock_ssh_manager.get_public_key.return_value = test_public_key
-        
+
         # Set up persistence manager with SSH key manager
         self.persistence_manager.ssh_key_manager = mock_ssh_manager
-        
+
         # Create web server
         server = StarletteWebServer(
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client
         client = TestClient(server.app)
-        
+
         # Make request to pubkey endpoint
         response = client.get("/api/pubkey")
-        
+
         # Verify response
         assert response.status_code == 200
         data = response.json()
@@ -183,24 +184,24 @@ class TestPubkeyEndpoint:
         mock_ssh_manager = Mock(spec=SSHKeyManager)
         test_public_key = "unknown-key-type SomeUnknownKeyData"
         mock_ssh_manager.get_public_key.return_value = test_public_key
-        
+
         # Set up persistence manager with SSH key manager
         self.persistence_manager.ssh_key_manager = mock_ssh_manager
-        
+
         # Create web server
         server = StarletteWebServer(
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client
         client = TestClient(server.app)
-        
+
         # Make request to pubkey endpoint
         response = client.get("/api/pubkey")
-        
+
         # Verify response
         assert response.status_code == 200
         data = response.json()
@@ -227,19 +228,19 @@ class TestDocumentationEndpoints:
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client
         client = TestClient(server.app)
-        
+
         # Make request to docs endpoint
         response = client.get("/docs")
-        
+
         # Verify response
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/html")
-        
+
         # Check that it contains Swagger UI elements
         content = response.text
         assert "swagger-ui" in content
@@ -254,19 +255,19 @@ class TestDocumentationEndpoints:
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client
         client = TestClient(server.app)
-        
+
         # Make request to openapi.yaml endpoint
         response = client.get("/openapi.yaml")
-        
+
         # Verify response
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/x-yaml"
-        
+
         # Check that it contains OpenAPI spec content
         content = response.text
         assert "openapi:" in content
@@ -280,22 +281,22 @@ class TestDocumentationEndpoints:
             self.webhook_processor,
             self.operations_queue,
             self.webhook_secret,
-            self.persistence_manager
+            self.persistence_manager,
         )
-        
+
         # Create test client with custom base URL
         client = TestClient(server.app, base_url="http://testserver:8080")
-        
+
         # Make request to openapi.yaml endpoint
         response = client.get("/openapi.yaml")
-        
+
         # Verify response
         assert response.status_code == 200
-        
+
         # Check that server URL was updated
         content = response.text
         assert "http://testserver:8080" in content
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -4,6 +4,7 @@ FROM python:3.10-slim
 RUN apt-get update && apt-get install -y \
     git \
     curl \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for faster package management
@@ -20,6 +21,8 @@ RUN uv sync --frozen
 
 # Copy application code
 COPY *.py ./
+COPY run.sh ./
+RUN chmod +x run.sh
 
 # Create data directory for persistent storage
 RUN mkdir -p /data
@@ -32,4 +35,4 @@ ENV PYTHONPATH=/app
 EXPOSE 8000
 
 # Run the application
-CMD ["uv", "run", "python", "app.py"]
+CMD ["./run.sh"]

@@ -151,6 +151,13 @@ class SyncResult:
     success: bool
     error: Optional[str] = None
 
+    @property
+    def folder_id(self) -> str:
+        """Get folder ID from the resource"""
+        from s3rn import S3RN
+
+        return S3RN.get_folder_id(self.resource)
+
 
 class SyncState:
     def __init__(self):

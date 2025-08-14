@@ -10,10 +10,8 @@ import signal
 import atexit
 import threading
 import glob
+import subprocess
 from typing import Dict, Any, Optional, List
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.backends import default_backend
 import git
 from s3rn import (
     S3RNType,
@@ -31,44 +29,52 @@ logger = logging.getLogger(__name__)
 
 
 class SSHKeyManager:
-    """Manage SSH keys for git authentication using environment variables"""
+    """Manage SSH keys for git authentication using key files"""
 
-    def __init__(self):
-        self._temp_key_path = None
-        self._setup_temp_key()
+    def __init__(
+        self,
+        data_dir: str = ".",
+        ssh_key_env_var: str = "SSH_PRIVATE_KEY",
+    ):
+        self.data_dir = data_dir
+        self.ssh_key_env_var = ssh_key_env_var
+        self.ssh_dir = os.path.join(data_dir, "ssh")
+        self.private_key_path = os.path.join(self.ssh_dir, "git_sync_key")
+        self.public_key_path = os.path.join(self.ssh_dir, "git_sync_key.pub")
 
-    def _setup_temp_key(self):
-        """Create temporary key file from environment variable"""
-        private_key_pem = os.getenv("SSH_PRIVATE_KEY")
-        if not private_key_pem:
-            raise ValueError("SSH_PRIVATE_KEY environment variable is required")
+        self._setup_ssh_keys()
 
-        self._temp_key_path = self._create_temp_key_file(private_key_pem)
+    def _setup_ssh_keys(self):
+        """Set up SSH keys from environment variable"""
+        ssh_key = os.environ.get(self.ssh_key_env_var)
+        if not ssh_key:
+            raise ValueError(f"Environment variable {self.ssh_key_env_var} not found")
 
-    def _create_temp_key_file(self, private_key_pem: str) -> str:
-        """Create temporary file for private key from environment variable"""
-        import tempfile
-
-        fd, temp_path = tempfile.mkstemp(prefix="git_sync_key_", suffix=".pem")
         try:
-            os.write(fd, private_key_pem.encode("utf-8"))
-            os.chmod(temp_path, 0o600)
-            # Register cleanup
-            atexit.register(lambda: os.unlink(temp_path) if os.path.exists(temp_path) else None)
-            return temp_path
-        finally:
-            os.close(fd)
+            # Create SSH directory
+            os.makedirs(self.ssh_dir, mode=0o700, exist_ok=True)
 
-    @property
-    def private_key_path(self) -> str:
-        """Get private key path"""
-        return self._temp_key_path
+            # Write private key to file
+            with open(self.private_key_path, "w") as f:
+                f.write(ssh_key)
+            os.chmod(self.private_key_path, 0o600)  # Read-only for owner
 
-    def get_public_key(self) -> str:
+            # Generate and write public key
+            public_key = self._extract_public_key(ssh_key)
+            with open(self.public_key_path, "w") as f:
+                f.write(public_key + "\n")
+            os.chmod(self.public_key_path, 0o644)  # Read for owner and group
+
+            logger.info(f"SSH keys written to {self.ssh_dir}")
+            logger.info(f"Public key: {public_key[:50]}...")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to setup SSH keys: {e}")
+
+    def _extract_public_key(self, private_key_pem: str) -> str:
         """Extract public key from private key"""
-        private_key_pem = os.getenv("SSH_PRIVATE_KEY")
-        if not private_key_pem:
-            raise ValueError("SSH_PRIVATE_KEY environment variable is required")
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.backends import default_backend
 
         try:
             # Load private key
@@ -79,7 +85,8 @@ class SSHKeyManager:
             # Extract public key
             public_key = private_key.public_key()
             public_ssh = public_key.public_bytes(
-                encoding=serialization.Encoding.OpenSSH, format=serialization.PublicFormat.OpenSSH
+                encoding=serialization.Encoding.OpenSSH,
+                format=serialization.PublicFormat.OpenSSH,
             )
 
             return public_ssh.decode("utf-8").strip()
@@ -101,7 +108,15 @@ class SSHKeyManager:
 
                 return public_ssh.decode("utf-8").strip()
             except Exception:
-                raise ValueError(f"Invalid private key format in SSH_PRIVATE_KEY: {str(e)}")
+                raise ValueError(f"Invalid private key format: {str(e)}")
+
+    def get_public_key(self) -> str:
+        """Get public key from file"""
+        try:
+            with open(self.public_key_path, "r") as f:
+                return f.read().strip()
+        except Exception as e:
+            raise ValueError(f"Could not read public key file: {e}")
 
 
 class PersistenceManager:
@@ -117,18 +132,27 @@ class PersistenceManager:
         self.git_repos: Dict[str, git.Repo] = {}  # Now keyed by "relay_id/folder_id"
         self.git_lock = threading.Lock()  # Prevent concurrent git operations
 
-        # Initialize SSH key manager only if SSH_PRIVATE_KEY is set
-        self.ssh_key_manager = None
-        if os.getenv("SSH_PRIVATE_KEY"):
-            try:
-                self.ssh_key_manager = SSHKeyManager()
-            except Exception as e:
-                logger.warning(f"Failed to initialize SSH key manager: {e}")
-                logger.warning("Git operations requiring SSH authentication will fail")
-
-        # Initialize git connector configuration
+        # Initialize git connector configuration first to get known hosts
         config_path = git_config_file or os.path.join(self.data_dir, "git_connectors.toml")
         self.git_config = GitConnectorConfig(config_path)
+
+        # Initialize SSH key manager only if SSH_PRIVATE_KEY is set
+        self.ssh_key_manager = None
+        ssh_private_key = os.getenv("SSH_PRIVATE_KEY")
+        if ssh_private_key:
+            print(f"SSH_PRIVATE_KEY found, length: {len(ssh_private_key)} chars")
+            try:
+                self.ssh_key_manager = SSHKeyManager(self.data_dir, "SSH_PRIVATE_KEY")
+                print("SSH key manager initialized successfully")
+                # Set up SSH environment globally for all Git operations
+                self._setup_global_ssh_environment()
+            except Exception as e:
+                logger.error(f"Failed to initialize SSH key manager: {e}")
+                logger.error("Git operations requiring SSH authentication will fail")
+                print(f"SSH key manager initialization failed: {e}")
+        else:
+            print("SSH_PRIVATE_KEY environment variable not found")
+            logger.warning("SSH_PRIVATE_KEY not set - SSH Git operations will fail")
 
         # In-memory storage for state (these will be loaded/saved per relay)
         self.document_hashes: Dict[str, Dict[str, str]] = {}  # keyed by relay_id then doc_id
@@ -296,20 +320,22 @@ class PersistenceManager:
 
                     # Create minimal folder state if it doesn't exist
                     if folder_id not in self.filemeta_folders[relay_id]:
-                        logger.info(f"Creating minimal folder state for {relay_id}/{folder_id} from TOML config")
+                        logger.info(
+                            f"Creating minimal folder state for {relay_id}/{folder_id} from TOML config"
+                        )
                         self.filemeta_folders[relay_id][folder_id] = {}
-                        
+
                         # Save the minimal state
                         self.save_persistent_data(relay_id)
 
                     # Initialize Git repository
                     self.init_git_repo(relay_id, folder_id)
-                    
+
                     # Configure git remote from TOML
                     success = self.configure_git_remote(
                         relay_id, folder_id, connector.url, connector.remote_name
                     )
-                    
+
                     if success:
                         logger.info(
                             f"Created Git repository from TOML config: {relay_id}/{folder_id} -> {connector.url}"
@@ -332,19 +358,27 @@ class PersistenceManager:
             logger.error(f"Error initializing Git repositories from TOML: {e}")
             return 0
 
+    def _setup_global_ssh_environment(self):
+        """Set up SSH environment variables globally for all Git operations"""
+        if not self.ssh_key_manager:
+            return
+
+        # Use the SSH key files created by SSHKeyManager
+        private_key_path = self.ssh_key_manager.private_key_path
+
+        # Set up SSH command to use the key file
+        # Let run.sh handle known_hosts with ssh-keyscan
+        ssh_command = f"ssh -o LogLevel=ERROR -o PasswordAuthentication=no -o PreferredAuthentications=publickey -o ConnectTimeout=10 -i {private_key_path}"
+        os.environ["GIT_SSH_COMMAND"] = ssh_command
+
+        logger.info(f"Global SSH setup - Using SSH command: {ssh_command}")
+        logger.info(f"Global SSH setup - Private key: {private_key_path}")
+        logger.info("Global SSH setup - Known hosts handled by run.sh")
+
     def _safe_git_operation(self, func, *args, **kwargs):
         """Execute git operation with locking and error recovery"""
         with self.git_lock:
-            # Set up SSH key environment for Git operations
-            original_env = os.environ.copy()
             try:
-                # Configure Git to use our SSH key if available
-                if self.ssh_key_manager:
-                    private_key_path = self.ssh_key_manager.private_key_path
-                    os.environ[
-                        "GIT_SSH_COMMAND"
-                    ] = f'ssh -i "{private_key_path}" -o StrictHostKeyChecking=no'
-
                 return func(*args, **kwargs)
             except git.exc.GitCommandError as e:
                 # If git operation fails due to lock files, try cleaning up and retrying once
@@ -357,10 +391,60 @@ class PersistenceManager:
                     return func(*args, **kwargs)
                 else:
                     raise
-            finally:
-                # Restore original environment
-                os.environ.clear()
-                os.environ.update(original_env)
+
+    def _safe_git_fetch_with_debug(self, origin, repo_key: str):
+        """Execute git fetch with enhanced debugging for SSH issues"""
+        try:
+            # Log SSH environment details
+            git_ssh_command = os.environ.get("GIT_SSH_COMMAND")
+
+            logger.info(f"Git fetch debug for {repo_key}:")
+            logger.info(f"  GIT_SSH_COMMAND: {git_ssh_command}")
+            logger.info(f"  Remote URL: {origin.url}")
+            logger.info(f"  SSH key manager available: {self.ssh_key_manager is not None}")
+
+            # Check SSH key files if manager is available
+            if self.ssh_key_manager:
+                private_key_exists = os.path.exists(self.ssh_key_manager.private_key_path)
+                public_key_exists = os.path.exists(self.ssh_key_manager.public_key_path)
+
+                logger.info(
+                    f"  Private key file exists: {private_key_exists} ({self.ssh_key_manager.private_key_path})"
+                )
+                logger.info(
+                    f"  Public key file exists: {public_key_exists} ({self.ssh_key_manager.public_key_path})"
+                )
+                logger.info("  Known hosts handled by run.sh")
+
+            # Perform the fetch
+            self._safe_git_operation(lambda: origin.fetch())
+
+        except git.exc.GitCommandError as e:
+            logger.error(f"Git fetch failed for {repo_key}: {e}")
+            logger.error(f"  Command: {e.command}")
+            logger.error(f"  Return code: {e.status}")
+            logger.error(f"  Stderr: {e.stderr}")
+
+            # Check if it's an SSH authentication error
+            if "Could not read from remote repository" in str(e.stderr):
+                logger.error("This appears to be an SSH authentication error.")
+                logger.error("Possible causes:")
+                logger.error("  1. SSH private key not properly loaded into ssh-agent")
+                logger.error("  2. SSH public key not added to the Git hosting service")
+                logger.error("  3. Repository URL is incorrect")
+                logger.error("  4. Network connectivity issues")
+
+                # Try to diagnose SSH key issues
+                if self.ssh_key_manager:
+                    try:
+                        public_key = self.ssh_key_manager.get_public_key()
+                        logger.info(f"  SSH public key in use: {public_key[:50]}...")
+                    except Exception as pk_error:
+                        logger.error(f"  Error getting public key: {pk_error}")
+                else:
+                    logger.error("  SSH key manager not initialized")
+
+            raise
 
     def get_folder_path_from_folder_resource(self, folder_resource: S3RemoteFolder) -> str:
         """Get the folder path within relay repository using S3RN resource"""
@@ -371,17 +455,17 @@ class PersistenceManager:
     def get_folder_path(self, relay_id: str, folder_uuid: str) -> str:
         """Get the folder path within relay repository"""
         return os.path.join(self.get_repo_dir(relay_id), folder_uuid)
-    
+
     def get_folder_path_with_prefix(self, relay_id: str, folder_uuid: str) -> str:
         """Get the folder path within relay repository, including any configured prefix"""
         base_path = self.get_folder_path(relay_id, folder_uuid)
-        
+
         # Check if there's a prefix configured for this folder
         connector = self.git_config.get_connector_for_folder(relay_id, folder_uuid)
         if connector and connector.prefix:
             # Apply the prefix - it will be sanitized when used with _sanitize_path
             return os.path.join(base_path, connector.prefix)
-        
+
         return base_path
 
     def load_persistent_data(self, relay_id: str):
@@ -473,12 +557,12 @@ class PersistenceManager:
             print(
                 f"Using existing git repository for folder {folder_id} in relay {relay_id} at {folder_path}"
             )
-            
+
             # If repo exists and has remotes, pull latest changes
             git_repo = self.git_repos[repo_key]
             if git_repo.remotes:
                 self._pull_from_remote(repo_key, git_repo)
-                
+
         except git.InvalidGitRepositoryError:
             # Repository doesn't exist locally, check if we should clone from remote
             connector = self.git_config.get_connector_for_folder(relay_id, folder_id)
@@ -487,16 +571,14 @@ class PersistenceManager:
                 try:
                     print(f"Cloning repository from {connector.url} for folder {folder_id}")
                     self.git_repos[repo_key] = git.Repo.clone_from(
-                        connector.url, 
-                        folder_path,
-                        branch=connector.branch
+                        connector.url, folder_path, branch=connector.branch
                     )
                     print(f"Successfully cloned repository to {folder_path}")
                     return self.git_repos[repo_key]
                 except Exception as e:
                     logger.warning(f"Failed to clone repository {connector.url}: {e}")
                     # Fall through to create new repo
-            
+
             # Create new repo
             self.git_repos[repo_key] = git.Repo.init(folder_path, initial_branch="main")
             print(
@@ -576,7 +658,9 @@ class PersistenceManager:
                         f"Failed to auto-configure git remote for folder {folder_id} in relay {relay_id}"
                     )
             else:
-                logger.debug(f"No git connector configured for folder {folder_id} in relay {relay_id}")
+                logger.debug(
+                    f"No git connector configured for folder {folder_id} in relay {relay_id}"
+                )
         except Exception as e:
             logger.error(f"Error auto-configuring git remote for folder {folder_id}: {e}")
 
@@ -627,7 +711,7 @@ class PersistenceManager:
                     # Pull latest changes before committing if remote is configured
                     if git_repo.remotes:
                         self._pull_from_remote(repo_key, git_repo)
-                    
+
                     # Add all changes using safe git operation
                     self._safe_git_operation(lambda: git_repo.git.add(A=True))
 
@@ -657,83 +741,99 @@ class PersistenceManager:
             if not git_repo.remotes:
                 logger.debug(f"No remotes configured for repository {repo_key}, skipping pull")
                 return
-                
+
             # Get the default remote (usually 'origin')
             origin = (
                 git_repo.remotes.origin
                 if "origin" in [r.name for r in git_repo.remotes]
                 else git_repo.remotes[0]
             )
-            
+
             # Check if we have any local commits that need to be preserved
             try:
                 current_branch = git_repo.active_branch
                 tracking_branch = current_branch.tracking_branch()
-                
+
                 if tracking_branch is None:
                     # No tracking branch set up yet, just fetch
                     print(f"Fetching from {origin.name} for repository {repo_key}")
-                    self._safe_git_operation(lambda: origin.fetch())
+                    self._safe_git_fetch_with_debug(origin, repo_key)
                     return
-                    
+
                 # Check if local branch is ahead of remote
-                ahead_behind = git_repo.git.rev_list('--left-right', '--count', 
-                                                   f'{tracking_branch.name}...{current_branch.name}')
-                behind, ahead = ahead_behind.split('\t')
-                
+                ahead_behind = git_repo.git.rev_list(
+                    "--left-right", "--count", f"{tracking_branch.name}...{current_branch.name}"
+                )
+                behind, ahead = ahead_behind.split("\t")
+
                 if int(behind) > 0:
                     if int(ahead) > 0:
                         # Both ahead and behind - need to merge remote changes
-                        print(f"Pulling from {origin.name} for repository {repo_key} with conflict resolution")
+                        print(
+                            f"Pulling from {origin.name} for repository {repo_key} with conflict resolution"
+                        )
                         try:
                             # Try regular rebase first
                             self._safe_git_operation(
-                                lambda: git_repo.git.pull('--rebase', origin.name, current_branch.name)
+                                lambda: git_repo.git.pull(
+                                    "--rebase", origin.name, current_branch.name
+                                )
                             )
                             print(f"Successfully rebased {repo_key}")
                         except git.exc.GitCommandError as rebase_error:
-                            if "CONFLICT" in str(rebase_error) or "merge conflict" in str(rebase_error).lower():
-                                logger.info(f"Merge conflicts detected for {repo_key}, resolving conflicts in our favor for our files...")
-                                
+                            if (
+                                "CONFLICT" in str(rebase_error)
+                                or "merge conflict" in str(rebase_error).lower()
+                            ):
+                                logger.info(
+                                    f"Merge conflicts detected for {repo_key}, resolving conflicts in our favor for our files..."
+                                )
+
                                 # Resolve conflicts by checking each conflicted file
                                 self._resolve_conflicts_in_our_favor(git_repo, repo_key)
-                                
+
                                 # Continue the rebase
                                 try:
-                                    git_repo.git.rebase('--continue')
+                                    git_repo.git.rebase("--continue")
                                     print(f"Resolved conflicts and continued rebase for {repo_key}")
                                 except git.exc.GitCommandError:
                                     # If rebase --continue fails, abort and try merge instead
-                                    logger.info(f"Rebase failed, trying merge strategy for {repo_key}")
-                                    git_repo.git.rebase('--abort')
-                                    
+                                    logger.info(
+                                        f"Rebase failed, trying merge strategy for {repo_key}"
+                                    )
+                                    git_repo.git.rebase("--abort")
+
                                     # Try merge approach
                                     self._safe_git_operation(
                                         lambda: git_repo.git.pull(origin.name, current_branch.name)
                                     )
-                                    
+
                                     # Resolve any merge conflicts
-                                    if git_repo.git.diff('--name-only', '--diff-filter=U'):
+                                    if git_repo.git.diff("--name-only", "--diff-filter=U"):
                                         self._resolve_conflicts_in_our_favor(git_repo, repo_key)
-                                        git_repo.git.commit('--no-edit')
-                                    
-                                    print(f"Merged remote changes with conflicts resolved for {repo_key}")
+                                        git_repo.git.commit("--no-edit")
+
+                                    print(
+                                        f"Merged remote changes with conflicts resolved for {repo_key}"
+                                    )
                             else:
                                 raise rebase_error
                     else:
                         # Only behind - fast-forward pull
                         print(f"Fast-forward pull from {origin.name} for repository {repo_key}")
-                        self._safe_git_operation(lambda: git_repo.git.pull(origin.name, current_branch.name))
+                        self._safe_git_operation(
+                            lambda: git_repo.git.pull(origin.name, current_branch.name)
+                        )
                 else:
                     # Up to date or only ahead
                     print(f"Repository {repo_key} is up to date with remote")
-                    
+
             except Exception as e:
                 logger.warning(f"Error checking branch status for {repo_key}: {e}")
                 # Fallback to simple fetch
                 print(f"Fetching from {origin.name} for repository {repo_key}")
-                self._safe_git_operation(lambda: origin.fetch())
-                
+                self._safe_git_fetch_with_debug(origin, repo_key)
+
         except Exception as e:
             logger.error(f"Error pulling from remote for repository {repo_key}: {e}")
             logger.error(f"Pull traceback: {traceback.format_exc()}")
@@ -742,27 +842,27 @@ class PersistenceManager:
         """Resolve merge conflicts by keeping our version for files within our managed prefix"""
         try:
             # Get list of conflicted files
-            conflicted_files = git_repo.git.diff('--name-only', '--diff-filter=U').splitlines()
-            
+            conflicted_files = git_repo.git.diff("--name-only", "--diff-filter=U").splitlines()
+
             if not conflicted_files:
                 return
-                
+
             logger.info(f"Resolving {len(conflicted_files)} conflicted files for {repo_key}")
-            
+
             # Parse repo_key to get relay_id and folder_id
-            relay_id, folder_id = repo_key.split('/', 1)
-            
+            relay_id, folder_id = repo_key.split("/", 1)
+
             # Get our managed prefix if any
             connector = self.git_config.get_connector_for_folder(relay_id, folder_id)
             our_prefix = connector.prefix if connector else ""
-            
+
             resolved_count = 0
             skipped_count = 0
-            
+
             for file_path in conflicted_files:
                 # Check if this file is within our managed prefix
                 is_our_file = False
-                
+
                 if our_prefix:
                     # If we have a prefix, only resolve conflicts for files within it
                     is_our_file = file_path.startswith(our_prefix + "/") or file_path == our_prefix
@@ -770,15 +870,16 @@ class PersistenceManager:
                     # If no prefix, we manage all files (but be more conservative)
                     # Only auto-resolve files that look like content files
                     is_our_file = (
-                        file_path.endswith(('.md', '.txt', '.canvas', '.json')) or
-                        not file_path.startswith('.') or  # Skip dotfiles
-                        file_path == '.gitignore'  # Except .gitignore which we manage
+                        file_path.endswith((".md", ".txt", ".canvas", ".json"))
+                        or not file_path.startswith(".")
+                        or file_path  # Skip dotfiles
+                        == ".gitignore"  # Except .gitignore which we manage
                     )
-                
+
                 if is_our_file:
                     # Resolve in our favor - use our version
                     try:
-                        git_repo.git.checkout('--ours', file_path)
+                        git_repo.git.checkout("--ours", file_path)
                         git_repo.git.add(file_path)
                         resolved_count += 1
                         logger.debug(f"Resolved conflict for {file_path} in favor of our version")
@@ -787,15 +888,19 @@ class PersistenceManager:
                 else:
                     # Not our file - use their version to preserve external changes
                     try:
-                        git_repo.git.checkout('--theirs', file_path)
+                        git_repo.git.checkout("--theirs", file_path)
                         git_repo.git.add(file_path)
                         skipped_count += 1
-                        logger.debug(f"Resolved conflict for {file_path} in favor of their version (external file)")
+                        logger.debug(
+                            f"Resolved conflict for {file_path} in favor of their version (external file)"
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to resolve conflict for {file_path}: {e}")
-            
-            logger.info(f"Conflict resolution for {repo_key}: {resolved_count} files kept ours, {skipped_count} files kept theirs")
-            
+
+            logger.info(
+                f"Conflict resolution for {repo_key}: {resolved_count} files kept ours, {skipped_count} files kept theirs"
+            )
+
         except Exception as e:
             logger.error(f"Error during conflict resolution for {repo_key}: {e}")
             logger.error(f"Conflict resolution traceback: {traceback.format_exc()}")
@@ -837,16 +942,20 @@ class PersistenceManager:
                         if "non-fast-forward" in str(push_error) or "rejected" in str(push_error):
                             # Push rejected - this means there are remote commits we haven't seen
                             # Pull first to merge remote changes, then push again
-                            logger.info(f"Push rejected for {repo_key}, pulling remote changes first")
+                            logger.info(
+                                f"Push rejected for {repo_key}, pulling remote changes first"
+                            )
                             self._pull_from_remote(repo_key, git_repo)
-                            
+
                             # Try pushing again after pull
                             try:
                                 self._safe_git_operation(lambda: origin.push())
                                 print(f"Git push successful after pull for repository {repo_key}")
                             except git.exc.GitCommandError:
                                 # If still failing, there might be an issue - log but don't force
-                                logger.warning(f"Push still failing for {repo_key} after pull, skipping")
+                                logger.warning(
+                                    f"Push still failing for {repo_key} after pull, skipping"
+                                )
                         else:
                             raise push_error
 
@@ -1026,6 +1135,7 @@ class PersistenceManager:
     def create_directory(self, folder_resource: S3RemoteFolder, path: str) -> str:
         """Create directory structure for folder-type items"""
         # Extract IDs from S3RN folder resource
+        relay_id = S3RN.get_relay_id(folder_resource)
         folder_uuid = S3RN.get_folder_id(folder_resource)
 
         # Build full path within folder subdirectory

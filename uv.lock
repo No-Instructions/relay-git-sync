@@ -360,6 +360,7 @@ dependencies = [
     { name = "requests" },
     { name = "starlette" },
     { name = "svix" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "uvicorn" },
     { name = "y-sweet-sdk", version = "0.6.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "y-sweet-sdk", version = "0.8.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -392,6 +393,7 @@ requires-dist = [
     { name = "requests" },
     { name = "starlette" },
     { name = "svix" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=1.2.0" },
     { name = "uvicorn" },
     { name = "y-sweet-sdk", specifier = ">=0.6.3" },
 ]

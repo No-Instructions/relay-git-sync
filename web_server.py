@@ -101,13 +101,13 @@ class StarletteWebServer:
             # Check if SSH key manager is available
             if not self.persistence_manager.ssh_key_manager:
                 return JSONResponse(
-                    {"error": "SSH_PRIVATE_KEY environment variable not configured"}, 
-                    status_code=400
+                    {"error": "SSH_PRIVATE_KEY environment variable not configured"},
+                    status_code=400,
                 )
-            
+
             # Get the public key
             public_key = self.persistence_manager.ssh_key_manager.get_public_key()
-            
+
             # Determine key type from the public key string
             key_type = "unknown"
             if public_key.startswith("ssh-rsa"):
@@ -116,17 +116,13 @@ class StarletteWebServer:
                 key_type = "ssh-ed25519"
             elif public_key.startswith("ecdsa-sha2-"):
                 key_type = "ecdsa"
-            
-            return JSONResponse({
-                "public_key": public_key,
-                "key_type": key_type
-            })
-            
+
+            return JSONResponse({"public_key": public_key, "key_type": key_type})
+
         except Exception as e:
             logger.error(f"Error getting public key: {e}")
             return JSONResponse(
-                {"error": f"Failed to retrieve public key: {str(e)}"}, 
-                status_code=500
+                {"error": f"Failed to retrieve public key: {str(e)}"}, status_code=500
             )
 
     @noauth
@@ -134,15 +130,15 @@ class StarletteWebServer:
         """Serve interactive Swagger UI documentation - no authentication required"""
         try:
             # Get the base URL for the API spec, respecting forwarded protocol headers
-            base_url = str(request.base_url).rstrip('/')
-            
+            base_url = str(request.base_url).rstrip("/")
+
             # Use X-Forwarded-Proto header if present (common with reverse proxies)
-            forwarded_proto = request.headers.get('x-forwarded-proto')
-            if forwarded_proto == 'https' and base_url.startswith('http://'):
-                base_url = base_url.replace('http://', 'https://')
-            
+            forwarded_proto = request.headers.get("x-forwarded-proto")
+            if forwarded_proto == "https" and base_url.startswith("http://"):
+                base_url = base_url.replace("http://", "https://")
+
             openapi_url = f"{base_url}/openapi.yaml"
-            
+
             # Create Swagger UI HTML using CDN
             html_content = f"""
             <!DOCTYPE html>
@@ -182,14 +178,14 @@ class StarletteWebServer:
             </body>
             </html>
             """
-            
+
             return HTMLResponse(html_content)
-            
+
         except Exception as e:
             logger.error(f"Error serving API docs: {e}")
             return HTMLResponse(
                 f"<html><body><h1>Error loading API documentation</h1><p>{str(e)}</p></body></html>",
-                status_code=500
+                status_code=500,
             )
 
     @noauth
@@ -197,13 +193,13 @@ class StarletteWebServer:
         """Serve OpenAPI specification - no authentication required"""
         try:
             # Get the base URL, respecting forwarded protocol headers
-            base_url = str(request.base_url).rstrip('/')
-            
+            base_url = str(request.base_url).rstrip("/")
+
             # Use X-Forwarded-Proto header if present (common with reverse proxies)
-            forwarded_proto = request.headers.get('x-forwarded-proto')
-            if forwarded_proto == 'https' and base_url.startswith('http://'):
-                base_url = base_url.replace('http://', 'https://')
-            
+            forwarded_proto = request.headers.get("x-forwarded-proto")
+            if forwarded_proto == "https" and base_url.startswith("http://"):
+                base_url = base_url.replace("http://", "https://")
+
             # Define OpenAPI spec inline to avoid deployment issues
             spec_data = {
                 "openapi": "3.0.3",
@@ -212,11 +208,11 @@ class StarletteWebServer:
                     "description": "REST API for Relay Git Sync service - public endpoints for SSH key management and service health.",
                     "version": "1.0.0",
                     "contact": {"name": "System 3"},
-                    "license": {"name": "MIT"}
+                    "license": {"name": "MIT"},
                 },
                 "servers": [
                     {"url": base_url, "description": "Current server"},
-                    {"url": "http://localhost:8000", "description": "Local development server"}
+                    {"url": "http://localhost:8000", "description": "Local development server"},
                 ],
                 "paths": {
                     "/health": {
@@ -232,13 +228,18 @@ class StarletteWebServer:
                                         "application/json": {
                                             "schema": {
                                                 "type": "object",
-                                                "properties": {"status": {"type": "string", "example": "healthy"}},
-                                                "required": ["status"]
+                                                "properties": {
+                                                    "status": {
+                                                        "type": "string",
+                                                        "example": "healthy",
+                                                    }
+                                                },
+                                                "required": ["status"],
                                             }
                                         }
-                                    }
+                                    },
                                 }
-                            }
+                            },
                         }
                     },
                     "/api/pubkey": {
@@ -255,66 +256,89 @@ class StarletteWebServer:
                                             "schema": {
                                                 "type": "object",
                                                 "properties": {
-                                                    "public_key": {"type": "string", "description": "The SSH public key in OpenSSH format", "example": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDataHereForTesting"},
-                                                    "key_type": {"type": "string", "description": "The type of SSH key", "enum": ["ssh-rsa", "ssh-ed25519", "ecdsa", "unknown"], "example": "ssh-ed25519"}
+                                                    "public_key": {
+                                                        "type": "string",
+                                                        "description": "The SSH public key in OpenSSH format",
+                                                        "example": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDataHereForTesting",
+                                                    },
+                                                    "key_type": {
+                                                        "type": "string",
+                                                        "description": "The type of SSH key",
+                                                        "enum": [
+                                                            "ssh-rsa",
+                                                            "ssh-ed25519",
+                                                            "ecdsa",
+                                                            "unknown",
+                                                        ],
+                                                        "example": "ssh-ed25519",
+                                                    },
                                                 },
-                                                "required": ["public_key", "key_type"]
+                                                "required": ["public_key", "key_type"],
                                             }
                                         }
-                                    }
+                                    },
                                 },
                                 "400": {
                                     "description": "SSH private key not configured",
                                     "content": {
                                         "application/json": {
                                             "schema": {"$ref": "#/components/schemas/Error"},
-                                            "example": {"error": "SSH_PRIVATE_KEY environment variable not configured"}
+                                            "example": {
+                                                "error": "SSH_PRIVATE_KEY environment variable not configured"
+                                            },
                                         }
-                                    }
+                                    },
                                 },
                                 "500": {
                                     "description": "Internal server error retrieving public key",
                                     "content": {
                                         "application/json": {
                                             "schema": {"$ref": "#/components/schemas/Error"},
-                                            "example": {"error": "Failed to retrieve public key: Invalid key format"}
+                                            "example": {
+                                                "error": "Failed to retrieve public key: Invalid key format"
+                                            },
                                         }
-                                    }
-                                }
-                            }
+                                    },
+                                },
+                            },
                         }
-                    }
+                    },
                 },
                 "components": {
                     "schemas": {
                         "Error": {
                             "type": "object",
-                            "properties": {"error": {"type": "string", "description": "Human-readable error message"}},
-                            "required": ["error"]
+                            "properties": {
+                                "error": {
+                                    "type": "string",
+                                    "description": "Human-readable error message",
+                                }
+                            },
+                            "required": ["error"],
                         }
                     }
                 },
                 "tags": [
                     {"name": "Health", "description": "Service health and status endpoints"},
-                    {"name": "SSH Keys", "description": "SSH key management and retrieval"}
-                ]
+                    {"name": "SSH Keys", "description": "SSH key management and retrieval"},
+                ],
             }
-            
+
             # Return as YAML with proper content type
             yaml_content = yaml.dump(spec_data, default_flow_style=False, sort_keys=False)
-            
+
             from starlette.responses import Response
+
             return Response(
                 yaml_content,
                 media_type="application/x-yaml",
-                headers={"Content-Disposition": "inline; filename=openapi.yaml"}
+                headers={"Content-Disposition": "inline; filename=openapi.yaml"},
             )
-            
+
         except Exception as e:
             logger.error(f"Error serving OpenAPI spec: {e}")
             return JSONResponse(
-                {"error": f"Failed to load OpenAPI specification: {str(e)}"}, 
-                status_code=500
+                {"error": f"Failed to load OpenAPI specification: {str(e)}"}, status_code=500
             )
 
     def run(self, host: str = "0.0.0.0", port: int = 8000):
@@ -333,10 +357,12 @@ class StarletteWebServer:
 
 
 def create_server(
-    webhook_processor: WebhookProcessor, 
-    operations_queue: OperationsQueue, 
+    webhook_processor: WebhookProcessor,
+    operations_queue: OperationsQueue,
     webhook_secret: str,
-    persistence_manager: PersistenceManager
+    persistence_manager: PersistenceManager,
 ) -> StarletteWebServer:
     """Create and configure the Starlette webhook server"""
-    return StarletteWebServer(webhook_processor, operations_queue, webhook_secret, persistence_manager)
+    return StarletteWebServer(
+        webhook_processor, operations_queue, webhook_secret, persistence_manager
+    )

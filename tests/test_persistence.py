@@ -558,6 +558,9 @@ class TestSSHKeyManager:
     """Test SSH key management functionality"""
 
     def setup_method(self):
+        # Create temp directory for SSH files
+        self.temp_dir = tempfile.mkdtemp()
+
         # Generate a test key for testing
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
@@ -582,6 +585,9 @@ class TestSSHKeyManager:
         os.environ["SSH_PRIVATE_KEY"] = self.test_private_pem
 
     def teardown_method(self):
+        # Clean up temp directory
+        shutil.rmtree(self.temp_dir)
+
         # Restore original env var
         if self.original_ssh_key:
             os.environ["SSH_PRIVATE_KEY"] = self.original_ssh_key
@@ -592,15 +598,17 @@ class TestSSHKeyManager:
         """Test that missing SSH_PRIVATE_KEY raises ValueError"""
         os.environ.pop("SSH_PRIVATE_KEY", None)
 
-        with pytest.raises(ValueError, match="SSH_PRIVATE_KEY environment variable is required"):
-            SSHKeyManager()
+        with pytest.raises(ValueError, match="SSH_PRIVATE_KEY not found"):
+            SSHKeyManager(self.temp_dir)
 
     def test_creates_temporary_key_file(self):
-        """Test SSH key manager creates temporary key file"""
-        ssh_manager = SSHKeyManager()
+        """Test SSH key manager creates key files"""
+        ssh_manager = SSHKeyManager(self.temp_dir)
 
-        # Check temp file exists and has correct permissions
+        # Check key files exist and have correct permissions
         assert os.path.exists(ssh_manager.private_key_path)
+        assert os.path.exists(ssh_manager.public_key_path)
+
         stat_info = os.stat(ssh_manager.private_key_path)
         assert oct(stat_info.st_mode)[-3:] == "600"
 
@@ -611,7 +619,7 @@ class TestSSHKeyManager:
 
     def test_get_public_key_extracts_from_private(self):
         """Test extracting public key from private key"""
-        ssh_manager = SSHKeyManager()
+        ssh_manager = SSHKeyManager(self.temp_dir)
 
         public_key = ssh_manager.get_public_key()
 
@@ -620,12 +628,11 @@ class TestSSHKeyManager:
         assert len(public_key.split()) >= 2  # ssh-rsa + key data
 
     def test_invalid_key_format_raises_error(self):
-        """Test that invalid key format raises ValueError"""
+        """Test that invalid key format raises RuntimeError"""
         os.environ["SSH_PRIVATE_KEY"] = "not a valid key"
 
-        ssh_manager = SSHKeyManager()  # This creates temp file
-        with pytest.raises(ValueError, match="Invalid private key format"):
-            ssh_manager.get_public_key()  # This validates the key
+        with pytest.raises(RuntimeError, match="Failed to setup SSH keys"):
+            SSHKeyManager(self.temp_dir)  # This should fail during initialization
 
 
 if __name__ == "__main__":

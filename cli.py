@@ -127,15 +127,18 @@ def sync_command(args):
 def show_pubkey_command(args):
     """Handle show-pubkey command"""
     try:
-        from persistence import SSHKeyManager
+        # Create a temporary SSH key manager to extract the public key
+        import tempfile
+        import os
 
-        ssh_key_manager = SSHKeyManager()
-        pubkey = ssh_key_manager.get_public_key()
-        print("\nSSH Public Key (extracted from SSH_PRIVATE_KEY):")
-        print("=" * 50)
-        print(pubkey)
-        print("=" * 50)
-        print("\nAdd this key to your Git hosting service as a deploy key.")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ssh_key_manager = SSHKeyManager(temp_dir)
+            pubkey = ssh_key_manager.get_public_key()
+            print("\nSSH Public Key (extracted from SSH_PRIVATE_KEY):")
+            print("=" * 50)
+            print(pubkey)
+            print("=" * 50)
+            print("\nAdd this key to your Git hosting service as a deploy key.")
         return 0
     except ValueError as e:
         print(f"Error: {e}")
@@ -161,7 +164,6 @@ def webhook_keygen_command(args):
     except Exception as e:
         logger.error(f"Error generating webhook secret: {e}")
         return 1
-
 
 
 def api_keygen_command(args):
@@ -213,15 +215,15 @@ def git_connector_list_command(args):
     try:
         config_file = args.git_config_file or os.path.join(args.data_dir, "git_connectors.toml")
         git_config = GitConnectorConfig(config_file)
-        
+
         if not git_config.connectors:
             print("No git connectors configured.")
             print(f"Create configuration file: {git_config.get_config_file_path()}")
             return 0
-        
+
         print(f"Git Connectors ({len(git_config.connectors)} configured):")
         print("=" * 80)
-        
+
         for i, connector in enumerate(git_config.connectors, 1):
             print(f"{i}. Relay: {connector.relay_id}")
             print(f"   Folder: {connector.shared_folder_id}")
@@ -231,7 +233,7 @@ def git_connector_list_command(args):
             print(f"   Prefix: {connector.prefix or '(root)'}")
             if i < len(git_config.connectors):
                 print()
-        
+
         return 0
     except Exception as e:
         logger.error(f"Error listing git connectors: {e}")
@@ -243,7 +245,7 @@ def git_connector_add_command(args):
     try:
         config_file = args.git_config_file or os.path.join(args.data_dir, "git_connectors.toml")
         git_config = GitConnectorConfig(config_file)
-        
+
         # Create new connector
         connector = GitConnector(
             shared_folder_id=args.folder_id,
@@ -251,12 +253,12 @@ def git_connector_add_command(args):
             url=args.url,
             branch=args.branch,
             remote_name=args.remote_name,
-            prefix=args.prefix
+            prefix=args.prefix,
         )
-        
+
         # Add to configuration
         git_config.add_connector(connector)
-        
+
         print("Git connector added successfully:")
         print(f"  Relay ID: {connector.relay_id}")
         print(f"  Folder ID: {connector.shared_folder_id}")
@@ -267,7 +269,7 @@ def git_connector_add_command(args):
         print()
         print(f"Note: Configuration is in memory only.")
         print(f"Manually edit: {git_config.get_config_file_path()}")
-        
+
         return 0
     except Exception as e:
         logger.error(f"Error adding git connector: {e}")
@@ -279,9 +281,9 @@ def git_connector_remove_command(args):
     try:
         config_file = args.git_config_file or os.path.join(args.data_dir, "git_connectors.toml")
         git_config = GitConnectorConfig(config_file)
-        
+
         removed = git_config.remove_connector(args.relay_id, args.folder_id)
-        
+
         if removed:
             print("Git connector removed successfully:")
             print(f"  Relay ID: {args.relay_id}")
@@ -294,7 +296,7 @@ def git_connector_remove_command(args):
             print(f"  Relay ID: {args.relay_id}")
             print(f"  Folder ID: {args.folder_id}")
             return 1
-        
+
         return 0
     except Exception as e:
         logger.error(f"Error removing git connector: {e}")
@@ -306,9 +308,9 @@ def git_connector_init_command(args):
     try:
         config_file = args.git_config_file or os.path.join(args.data_dir, "git_connectors.toml")
         git_config = GitConnectorConfig(config_file)
-        
+
         created = git_config.create_example_config()
-        
+
         if created:
             print("Created example git connector configuration:")
             print(f"  File: {git_config.get_config_file_path()}")
@@ -318,7 +320,7 @@ def git_connector_init_command(args):
             print("Configuration file already exists:")
             print(f"  File: {git_config.get_config_file_path()}")
             return 1
-        
+
         return 0
     except Exception as e:
         logger.error(f"Error creating git connector config: {e}")
@@ -330,9 +332,9 @@ def git_connector_validate_command(args):
     try:
         config_file = args.git_config_file or os.path.join(args.data_dir, "git_connectors.toml")
         git_config = GitConnectorConfig(config_file)
-        
+
         errors = git_config.validate_config()
-        
+
         if not errors:
             print("✓ Git connector configuration is valid")
             print(f"  File: {git_config.get_config_file_path()}")
@@ -343,7 +345,7 @@ def git_connector_validate_command(args):
             for error in errors:
                 print(f"  - {error}")
             return 1
-        
+
     except Exception as e:
         logger.error(f"Error validating git connector config: {e}")
         return 1
@@ -354,28 +356,30 @@ def git_connector_sync_command(args):
     try:
         config_file = args.git_config_file or os.path.join(args.data_dir, "git_connectors.toml")
         persistence_manager = PersistenceManager(args.data_dir, config_file)
-        
+
         print("Creating git repositories from TOML configuration...")
         print(f"Config file: {config_file}")
-        
+
         # Force initialization from TOML
         initialized_count = persistence_manager._initialize_git_repos_from_toml()
-        
+
         if initialized_count > 0:
             print(f"✓ Created {initialized_count} git repositories")
-            
+
             # Show what was created
             for connector in persistence_manager.git_config.connectors:
                 repo_key = f"{connector.relay_id}/{connector.shared_folder_id}"
                 if repo_key in persistence_manager.git_repos:
-                    folder_path = persistence_manager.get_folder_path(connector.relay_id, connector.shared_folder_id)
+                    folder_path = persistence_manager.get_folder_path(
+                        connector.relay_id, connector.shared_folder_id
+                    )
                     print(f"  - {repo_key} -> {folder_path}")
                     print(f"    Remote: {connector.remote_name} = {connector.url}")
         else:
             print("No new repositories created (may already exist)")
-        
+
         return 0
-        
+
     except Exception as e:
         logger.error(f"Error syncing git connectors: {e}")
         return 1
@@ -477,7 +481,9 @@ Git Connectors:
     git_subparsers = git_parser.add_subparsers(dest="git_action", help="Git connector actions")
 
     # git init command
-    git_init_parser = git_subparsers.add_parser("init", help="Create example git connectors configuration")
+    git_init_parser = git_subparsers.add_parser(
+        "init", help="Create example git connectors configuration"
+    )
     git_init_parser.set_defaults(func=git_connector_init_command)
 
     # git list command
@@ -490,22 +496,32 @@ Git Connectors:
     git_add_parser.add_argument("--folder-id", required=True, help="Shared folder ID (UUID)")
     git_add_parser.add_argument("--url", required=True, help="Git repository URL")
     git_add_parser.add_argument("--branch", default="main", help="Git branch (default: main)")
-    git_add_parser.add_argument("--remote-name", default="origin", help="Git remote name (default: origin)")
-    git_add_parser.add_argument("--prefix", default="", help="Subdirectory within repository for content (default: empty)")
+    git_add_parser.add_argument(
+        "--remote-name", default="origin", help="Git remote name (default: origin)"
+    )
+    git_add_parser.add_argument(
+        "--prefix", default="", help="Subdirectory within repository for content (default: empty)"
+    )
     git_add_parser.set_defaults(func=git_connector_add_command)
 
     # git remove command
-    git_remove_parser = git_subparsers.add_parser("remove", help="Remove git connector configuration")
+    git_remove_parser = git_subparsers.add_parser(
+        "remove", help="Remove git connector configuration"
+    )
     git_remove_parser.add_argument("--relay-id", required=True, help="Relay ID (UUID)")
     git_remove_parser.add_argument("--folder-id", required=True, help="Shared folder ID (UUID)")
     git_remove_parser.set_defaults(func=git_connector_remove_command)
 
     # git validate command
-    git_validate_parser = git_subparsers.add_parser("validate", help="Validate git connectors configuration")
+    git_validate_parser = git_subparsers.add_parser(
+        "validate", help="Validate git connectors configuration"
+    )
     git_validate_parser.set_defaults(func=git_connector_validate_command)
 
     # git sync command
-    git_sync_parser = git_subparsers.add_parser("sync", help="Create git repositories from TOML configuration")
+    git_sync_parser = git_subparsers.add_parser(
+        "sync", help="Create git repositories from TOML configuration"
+    )
     git_sync_parser.set_defaults(func=git_connector_sync_command)
 
     # API command group
