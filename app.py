@@ -22,6 +22,7 @@ def run_server(
     port=8000,
     commit_interval=10,
     data_dir=".",
+    git_config_file=None,
 ):
     print(f"Relay server: {relay_server_url}")
     print(f"Data directory: {data_dir}")
@@ -30,7 +31,7 @@ def run_server(
     try:
         # Initialize components
         relay_client = RelayClient(relay_server_url, relay_server_api_key)
-        persistence_manager = PersistenceManager(data_dir)
+        persistence_manager = PersistenceManager(data_dir, git_config_file)
         sync_engine = SyncEngine(data_dir, relay_client, persistence_manager)
         webhook_processor = WebhookProcessor(relay_client)
         operations_queue = OperationsQueue(sync_engine, commit_interval)
@@ -76,6 +77,11 @@ if __name__ == "__main__":
         default=os.getenv("WEBHOOK_SECRET", ""),
         help="Webhook secret for authentication (default: from WEBHOOK_SECRET env var)",
     )
+    parser.add_argument(
+        "--git-config-file",
+        default=None,
+        help="Path to git connectors TOML configuration file (default: <data-dir>/git_connectors.toml)",
+    )
 
     args = parser.parse_args()
 
@@ -101,4 +107,5 @@ if __name__ == "__main__":
         args.port,
         args.commit_interval,
         args.data_dir,
+        args.git_config_file,
     )

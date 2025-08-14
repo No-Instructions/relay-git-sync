@@ -25,6 +25,7 @@ from s3rn import (
     ResourceInterface,
 )
 from models import get_s3rn_resource_category
+from git_config import GitConnectorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ class PersistenceManager:
     MIRROR_BASE_DIR = "repos"
     LOCAL_STATE_FILE = "local_state.json"
 
-    def __init__(self, data_dir: str = "."):
+    def __init__(self, data_dir: str = ".", git_config_file: Optional[str] = None):
         self.data_dir = data_dir
         self.git_repos: Dict[str, git.Repo] = {}  # Now keyed by "relay_id/folder_id"
         self.git_lock = threading.Lock()  # Prevent concurrent git operations
@@ -124,6 +125,10 @@ class PersistenceManager:
             except Exception as e:
                 logger.warning(f"Failed to initialize SSH key manager: {e}")
                 logger.warning("Git operations requiring SSH authentication will fail")
+
+        # Initialize git connector configuration
+        config_path = git_config_file or os.path.join(self.data_dir, "git_connectors.toml")
+        self.git_config = GitConnectorConfig(config_path)
 
         # In-memory storage for state (these will be loaded/saved per relay)
         self.document_hashes: Dict[str, Dict[str, str]] = {}  # keyed by relay_id then doc_id
@@ -223,42 +228,109 @@ class PersistenceManager:
             logger.error(f"Error during git lock file cleanup: {e}")
 
     def _initialize_all_git_repos(self):
-        """Initialize Git repositories for all existing folders on startup"""
+        """Initialize Git repositories for all folders (existing + TOML configured)"""
         try:
-            state_base_dir = os.path.join(self.data_dir, "state")
-            if not os.path.exists(state_base_dir):
-                return
-
-            logger.info("Initializing Git repositories for existing folders...")
+            logger.info("Initializing Git repositories...")
             initialized_count = 0
 
-            # Scan all relay state directories
-            for relay_id in os.listdir(state_base_dir):
-                relay_state_dir = os.path.join(state_base_dir, relay_id)
-                if not os.path.isdir(relay_state_dir):
-                    continue
+            # First: Initialize repos for existing folders with state
+            state_base_dir = os.path.join(self.data_dir, "state")
+            if os.path.exists(state_base_dir):
+                # Scan all relay state directories
+                for relay_id in os.listdir(state_base_dir):
+                    relay_state_dir = os.path.join(state_base_dir, relay_id)
+                    if not os.path.isdir(relay_state_dir):
+                        continue
 
-                # Load persistent data to get folder information
-                self.load_persistent_data(relay_id)
+                    # Load persistent data to get folder information
+                    self.load_persistent_data(relay_id)
 
-                # Initialize Git repos for all folders in this relay
-                filemeta_folders = self.filemeta_folders.get(relay_id, {})
-                for folder_id in filemeta_folders.keys():
-                    try:
-                        self.init_git_repo(relay_id, folder_id)
-                        initialized_count += 1
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to initialize Git repo for folder {folder_id} in relay {relay_id}: {e}"
-                        )
+                    # Initialize Git repos for all folders in this relay
+                    filemeta_folders = self.filemeta_folders.get(relay_id, {})
+                    for folder_id in filemeta_folders.keys():
+                        try:
+                            self.init_git_repo(relay_id, folder_id)
+                            # Auto-configure git remote if connector exists
+                            self._auto_configure_git_remote(relay_id, folder_id)
+                            initialized_count += 1
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to initialize Git repo for folder {folder_id} in relay {relay_id}: {e}"
+                            )
+
+            # Second: Initialize repos from TOML configuration (even without prior state)
+            toml_initialized_count = self._initialize_git_repos_from_toml()
+            initialized_count += toml_initialized_count
 
             if initialized_count > 0:
-                logger.info(f"Initialized {initialized_count} Git repositories")
+                logger.info(f"Initialized {initialized_count} Git repositories total")
             else:
-                logger.debug("No existing folders found to initialize")
+                logger.debug("No folders found to initialize")
 
         except Exception as e:
             logger.error(f"Error during Git repository initialization: {e}")
+
+    def _initialize_git_repos_from_toml(self) -> int:
+        """Initialize Git repositories from TOML configuration, creating minimal state as needed"""
+        try:
+            if not self.git_config.connectors:
+                logger.debug("No git connectors configured in TOML")
+                return 0
+
+            logger.info("Initializing Git repositories from TOML configuration...")
+            initialized_count = 0
+
+            for connector in self.git_config.connectors:
+                try:
+                    relay_id = connector.relay_id
+                    folder_id = connector.shared_folder_id
+
+                    # Check if this repo already exists
+                    repo_key = f"{relay_id}/{folder_id}"
+                    if repo_key in self.git_repos:
+                        logger.debug(f"Git repo already exists for {repo_key}, skipping")
+                        continue
+
+                    # Ensure relay data is loaded (creates empty state if needed)
+                    self.load_persistent_data(relay_id)
+
+                    # Create minimal folder state if it doesn't exist
+                    if folder_id not in self.filemeta_folders[relay_id]:
+                        logger.info(f"Creating minimal folder state for {relay_id}/{folder_id} from TOML config")
+                        self.filemeta_folders[relay_id][folder_id] = {}
+                        
+                        # Save the minimal state
+                        self.save_persistent_data(relay_id)
+
+                    # Initialize Git repository
+                    self.init_git_repo(relay_id, folder_id)
+                    
+                    # Configure git remote from TOML
+                    success = self.configure_git_remote(
+                        relay_id, folder_id, connector.url, connector.remote_name
+                    )
+                    
+                    if success:
+                        logger.info(
+                            f"Created Git repository from TOML config: {relay_id}/{folder_id} -> {connector.url}"
+                        )
+                        initialized_count += 1
+                    else:
+                        logger.warning(
+                            f"Created Git repository but failed to configure remote for {relay_id}/{folder_id}"
+                        )
+                        initialized_count += 1
+
+                except Exception as e:
+                    logger.error(
+                        f"Failed to initialize Git repo from TOML for {connector.relay_id}/{connector.shared_folder_id}: {e}"
+                    )
+
+            return initialized_count
+
+        except Exception as e:
+            logger.error(f"Error initializing Git repositories from TOML: {e}")
+            return 0
 
     def _safe_git_operation(self, func, *args, **kwargs):
         """Execute git operation with locking and error recovery"""
@@ -450,6 +522,28 @@ class PersistenceManager:
                 f"Error configuring remote for folder {folder_id} in relay {relay_id}: {e}"
             )
             return False
+
+    def _auto_configure_git_remote(self, relay_id: str, folder_id: str):
+        """Automatically configure git remote based on TOML configuration"""
+        try:
+            connector = self.git_config.get_connector_for_folder(relay_id, folder_id)
+            if connector:
+                success = self.configure_git_remote(
+                    relay_id, folder_id, connector.url, connector.remote_name
+                )
+                if success:
+                    logger.info(
+                        f"Auto-configured git remote for folder {folder_id} in relay {relay_id}: "
+                        f"{connector.remote_name} -> {connector.url}"
+                    )
+                else:
+                    logger.warning(
+                        f"Failed to auto-configure git remote for folder {folder_id} in relay {relay_id}"
+                    )
+            else:
+                logger.debug(f"No git connector configured for folder {folder_id} in relay {relay_id}")
+        except Exception as e:
+            logger.error(f"Error auto-configuring git remote for folder {folder_id}: {e}")
 
     def push_to_remote(self, relay_id: str, folder_id: str) -> bool:
         """Manually push a specific folder repository to its remote"""
