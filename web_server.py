@@ -159,6 +159,15 @@ class StarletteWebServer:
                 <script src="https://unpkg.com/swagger-ui-dist@5.10.5/swagger-ui-bundle.js"></script>
                 <script src="https://unpkg.com/swagger-ui-dist@5.10.5/swagger-ui-standalone-preset.js"></script>
                 <script>
+                    function CustomTopbarPlugin() {{
+                        // this plugin overrides the Topbar component to return nothing
+                        return {{
+                            components: {{
+                                Topbar: () => null
+                            }}
+                        }}
+                    }}
+
                     window.onload = function() {{
                         const ui = SwaggerUIBundle({{
                             url: '{openapi_url}',
@@ -169,7 +178,8 @@ class StarletteWebServer:
                                 SwaggerUIStandalonePreset
                             ],
                             plugins: [
-                                SwaggerUIBundle.plugins.DownloadUrl
+                                SwaggerUIBundle.plugins.DownloadUrl,
+                                CustomTopbarPlugin
                             ],
                             layout: "StandaloneLayout"
                         }});
