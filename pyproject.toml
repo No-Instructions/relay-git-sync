@@ -16,6 +16,7 @@ dependencies = [
     "svix",
     "starlette",
     "uvicorn",
+    "pyyaml>=6.0.2",
 ]
 
 [project.optional-dependencies]

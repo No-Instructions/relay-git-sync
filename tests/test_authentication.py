@@ -333,7 +333,7 @@ def test_web_server_integration():
     webhook_secret = "test_shared_secret_123"
 
     # Create the actual web server
-    server = StarletteWebServer(webhook_processor, operations_queue, webhook_secret)
+    server = StarletteWebServer(webhook_processor, operations_queue, webhook_secret, persistence_manager)
     client = TestClient(server.app)
 
     # Test health endpoint (should work without auth)

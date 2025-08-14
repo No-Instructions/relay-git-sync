@@ -34,7 +34,7 @@ def run_server(
         sync_engine = SyncEngine(data_dir, relay_client, persistence_manager)
         webhook_processor = WebhookProcessor(relay_client)
         operations_queue = OperationsQueue(sync_engine, commit_interval)
-        web_server = create_server(webhook_processor, operations_queue, webhook_secret)
+        web_server = create_server(webhook_processor, operations_queue, webhook_secret, persistence_manager)
 
         # Start the server
         web_server.run(port=port)

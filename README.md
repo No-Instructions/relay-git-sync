@@ -165,3 +165,17 @@ data-dir/
         ├── shared_folders.json   # Folder metadata
         └── local_state.json      # File state per folder
 ```
+
+## API Documentation
+
+The server provides both webhook endpoints for Relay Server integration and public API endpoints for management.
+
+**Interactive Documentation:** Visit `/docs` when the server is running for interactive Swagger UI documentation.
+
+**OpenAPI Specification:** See [`openapi.yaml`](./openapi.yaml) for complete API documentation with request/response schemas, authentication details, and examples.
+
+**Key Endpoints:**
+- `GET /health` - Health check (public)  
+- `GET /api/pubkey` - SSH public key retrieval (public)
+- `GET /docs` - Interactive API documentation (public)
+- `GET /openapi.yaml` - OpenAPI specification (public)

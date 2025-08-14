@@ -134,6 +134,50 @@ def show_pubkey_command(args):
         return 1
 ```
 
+### 7. Public API Endpoint
+Add a public HTTP endpoint to retrieve the SSH public key without authentication:
+
+```python
+@noauth
+async def get_pubkey(self, request: Request):
+    """Get SSH public key - no authentication required"""
+    try:
+        # Check if SSH key manager is available
+        if not self.persistence_manager.ssh_key_manager:
+            return JSONResponse(
+                {"error": "SSH_PRIVATE_KEY environment variable not configured"}, 
+                status_code=400
+            )
+        
+        # Get the public key
+        public_key = self.persistence_manager.ssh_key_manager.get_public_key()
+        
+        # Determine key type from the public key string
+        key_type = "unknown"
+        if public_key.startswith("ssh-rsa"):
+            key_type = "ssh-rsa"
+        elif public_key.startswith("ssh-ed25519"):
+            key_type = "ssh-ed25519"
+        elif public_key.startswith("ecdsa-sha2-"):
+            key_type = "ecdsa"
+        
+        return JSONResponse({
+            "public_key": public_key,
+            "key_type": key_type
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting public key: {e}")
+        return JSONResponse(
+            {"error": f"Failed to retrieve public key: {str(e)}"}, 
+            status_code=500
+        )
+```
+
+**Endpoint**: `GET /api/pubkey`
+**Authentication**: None required (public endpoint)
+**Response Format**: JSON with `public_key` and `key_type` fields
+
 ## Implementation Plan
 
 ### Phase 1: Refactor SSHKeyManager
@@ -152,6 +196,12 @@ def show_pubkey_command(args):
 2. Update `show-pubkey` command
 3. Add startup validation for `SSH_PRIVATE_KEY`
 4. Update help text and examples
+
+### Phase 3.5: API Endpoint
+1. Add `GET /api/pubkey` endpoint to web server
+2. Update web server constructor to accept `persistence_manager`
+3. Add comprehensive tests for the new endpoint
+4. Update API documentation in README
 
 ### Phase 4: Testing & Documentation
 1. Update all tests to set `SSH_PRIVATE_KEY`
@@ -190,6 +240,12 @@ def show_pubkey_command(args):
 - No hidden key generation
 - Clear separation of concerns
 
+### Public API Access
+- HTTP endpoint for retrieving public key programmatically
+- No authentication required for public key access
+- Enables automated deployment and configuration workflows
+- Supports CI/CD integration for Git hosting service configuration
+
 ## Migration Requirements
 
 ### For All Deployments
@@ -222,6 +278,22 @@ fly deploy
 ```bash
 # Run with environment variable
 docker run -e SSH_PRIVATE_KEY="$(cat git_sync_key)" git-sync
+```
+
+### Using the Public Key API
+```bash
+# Get the public key via HTTP API (no authentication required)
+curl http://localhost:8000/api/pubkey
+
+# Example response:
+{
+  "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyData",
+  "key_type": "ssh-ed25519"
+}
+
+# Extract just the public key for automation
+PUBLIC_KEY=$(curl -s http://localhost:8000/api/pubkey | jq -r .public_key)
+echo "$PUBLIC_KEY"
 ```
 
 ### Kubernetes Deployment

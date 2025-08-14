@@ -1,0 +1,283 @@
+openapi: 3.0.3
+info:
+  title: Relay Git Sync API
+  description: |
+    REST API for Relay Git Sync service - a real-time synchronization bridge between 
+    Relay Server collaborative documents and Git repositories.
+    
+    This API provides both webhook endpoints for Relay Server integration and public 
+    management endpoints for operational tasks.
+  version: 1.0.0
+  contact:
+    name: System 3
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://your-git-sync-server.com
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns the current health status of the service
+      tags:
+        - Health
+      security: []  # No authentication required
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                required:
+                  - status
+
+  /api/pubkey:
+    get:
+      summary: Get SSH public key
+      description: |
+        Returns the SSH public key used for Git operations. This endpoint does not
+        require authentication and can be used by CI/CD systems to programmatically
+        retrieve the public key for Git hosting service configuration.
+      tags:
+        - SSH Keys
+      security: []  # No authentication required
+      responses:
+        '200':
+          description: SSH public key retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  public_key:
+                    type: string
+                    description: The SSH public key in OpenSSH format
+                    example: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDataHereForTesting"
+                  key_type:
+                    type: string
+                    description: The type of SSH key
+                    enum: [ssh-rsa, ssh-ed25519, ecdsa, unknown]
+                    example: "ssh-ed25519"
+                required:
+                  - public_key
+                  - key_type
+        '400':
+          description: SSH private key not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "SSH_PRIVATE_KEY environment variable not configured"
+        '500':
+          description: Internal server error retrieving public key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "Failed to retrieve public key: Invalid key format"
+
+  /docs:
+    get:
+      summary: Interactive API documentation
+      description: |
+        Serves interactive Swagger UI documentation for this API. This provides
+        a web interface for exploring and testing API endpoints.
+      tags:
+        - Documentation
+      security: []  # No authentication required
+      responses:
+        '200':
+          description: Swagger UI documentation page
+          content:
+            text/html:
+              schema:
+                type: string
+                example: "<!DOCTYPE html>..."
+
+  /openapi.yaml:
+    get:
+      summary: OpenAPI specification
+      description: |
+        Returns the OpenAPI 3.0.3 specification for this API in YAML format.
+        The server URL in the specification is dynamically updated to match
+        the current request.
+      tags:
+        - Documentation
+      security: []  # No authentication required
+      responses:
+        '200':
+          description: OpenAPI specification in YAML format
+          content:
+            application/x-yaml:
+              schema:
+                type: string
+                example: |
+                  openapi: 3.0.3
+                  info:
+                    title: Relay Git Sync API
+                    version: 1.0.0
+        '404':
+          description: OpenAPI specification file not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "OpenAPI specification file not found"
+        '500':
+          description: Error loading specification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "Failed to load OpenAPI specification: Permission denied"
+
+  /webhooks:
+    post:
+      summary: Receive document change webhook
+      description: |
+        Receives document change notifications from Relay Server. This endpoint
+        processes webhook payloads and triggers synchronization operations.
+        
+        Authentication is required using either:
+        - Bearer token matching WEBHOOK_SECRET environment variable
+        - Svix HMAC signature validation (for whsec_ prefixed secrets)
+      tags:
+        - Webhooks
+      security:
+        - webhookAuth: []
+        - svixSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: object
+                  properties:
+                    doc_id:
+                      type: string
+                      description: Compound document ID (relay_uuid-doc_uuid)
+                      example: "12345678-1234-5678-9abc-123456789012-87654321-4321-8765-cba9-876543210987"
+                    timestamp:
+                      type: string
+                      format: date-time
+                      description: ISO 8601 timestamp of the change
+                      example: "2023-01-01T12:00:00Z"
+                  required:
+                    - doc_id
+                    - timestamp
+              required:
+                - payload
+            example:
+              payload:
+                doc_id: "12345678-1234-5678-9abc-123456789012-87654321-4321-8765-cba9-876543210987"
+                timestamp: "2023-01-01T12:00:00Z"
+      responses:
+        '200':
+          description: Webhook received and processed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "received"
+                required:
+                  - status
+        '400':
+          description: Invalid webhook payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "Invalid JSON payload"
+        '401':
+          description: Authentication required or failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                missing_auth:
+                  summary: Missing authentication
+                  value:
+                    error: "Authentication required"
+                invalid_auth:
+                  summary: Invalid authentication
+                  value:
+                    error: "Authentication failed: Invalid shared secret"
+                signature_failed:
+                  summary: Signature validation failed
+                  value:
+                    error: "Authentication failed: Signature validation failed"
+        '500':
+          description: Internal server error processing webhook
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "Internal server error"
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+      required:
+        - error
+
+  securitySchemes:
+    webhookAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token authentication using the WEBHOOK_SECRET environment variable.
+        The token should exactly match the configured webhook secret.
+      
+    svixSignature:
+      type: apiKey
+      in: header
+      name: svix-signature
+      description: |
+        Svix HMAC signature validation. Requires the following headers:
+        - svix-id (or webhook-id): Message ID
+        - svix-timestamp (or webhook-timestamp): Unix timestamp
+        - svix-signature (or webhook-signature): HMAC signature
+        
+        Used when WEBHOOK_SECRET starts with 'whsec_' prefix.
+
+tags:
+  - name: Health
+    description: Service health and status endpoints
+  - name: SSH Keys
+    description: SSH key management and retrieval
+  - name: Webhooks
+    description: Webhook endpoints for document change notifications
+  - name: Documentation
+    description: API documentation and specification endpoints
+
+externalDocs:
+  description: GitHub Repository
+  url: https://github.com/your-org/relay-git-sync
