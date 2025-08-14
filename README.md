@@ -28,7 +28,6 @@ Relay Server Git Sync monitors collaborative documents in Relay Server and autom
 4. Changes are automatically committed to Git with timestamps
 5. Process repeats continuously for real-time synchronization
 
-Perfect for teams wanting the benefits of collaborative editing with the reliability and history of Git version control.
 
 ## Setup
 
@@ -61,12 +60,9 @@ export WEBHOOK_SECRET="your-generated-secret"
 ```
 
 3. **Configure your webhook provider** with:
-   RELAY_SERVER_WEBHOOK_CONFIG=[{
-   "url": "https://your-git-sync-server.com/webhooks",
-   "auth_token": "your-generated-secret"
-   }]
-
-Note: The server matches the exact value in the Bearer token against WEBHOOK_SECRET.
+```
+RELAY_SERVER_WEBHOOK_CONFIG=[{"url": "https://your-git-sync-server.com/webhooks", "auth_token": "your-generated-secret" }]
+```
 
 #### Method 2: HMAC Signatures (Webhook Delivery Service)
 
@@ -76,6 +72,47 @@ To use webhook signatures, use a secret starting with `whsec_`:
 ```bash
 export WEBHOOK_SECRET=whsec_your_signing_secret
 ```
+
+### SSH Key Setup
+
+SSH keys must be provided via the `SSH_PRIVATE_KEY` environment variable.
+
+First, generate an SSH key pair externally:
+
+```bash
+ssh-keygen -t ed25519 -f git_sync_key -N ""
+```
+
+Then set the environment variable:
+
+```bash
+export SSH_PRIVATE_KEY="$(cat git_sync_key)"
+```
+
+View the public key from the private key:
+
+```bash
+uv run cli.py ssh show-pubkey
+```
+
+Add the public key to your Git hosting service (GitHub, GitLab, etc.) as a deploy key with write permissions.
+
+### Configuring a Git Remote
+
+Create `git_connectors.toml` in your data directory to configure git repositories:
+
+```toml
+[[git_connector]]
+shared_folder_id = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+relay_id = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+url = "https://github.com/example/repository.git"
+branch = "main"
+remote_name = "origin"
+prefix = ""  # Optional: subdirectory within repo
+```
+
+The system will automatically create repositories and configure remotes on startup.
+
 
 ### Running the Server
 
@@ -102,6 +139,7 @@ python app.py --port 8000 --commit-interval 10
 - `--data-dir`: Data storage directory (default: from `RELAY_GIT_DATA_DIR` env var or current directory)
 - `--webhook-secret`: Webhook secret (or set `WEBHOOK_SECRET`)
 
+
 ### Manual Sync
 
 You can also perform one-time syncs within your container by using the CLI:
@@ -110,45 +148,6 @@ You can also perform one-time syncs within your container by using the CLI:
 uv run cli.py sync --relay-id <relay-uuid> --folder-id <folder-uuid>
 ```
 
-### SSH Key Setup
-
-SSH keys must be provided via the `SSH_PRIVATE_KEY` environment variable.
-
-First, generate an SSH key pair externally:
-
-```bash
-# Generate Ed25519 key (recommended)
-ssh-keygen -t ed25519 -f git_sync_key -N ""
-
-# Or RSA key
-ssh-keygen -t rsa -b 2048 -f git_sync_key -N ""
-```
-
-Then set the environment variable:
-
-```bash
-export SSH_PRIVATE_KEY="$(cat git_sync_key)"
-```
-
-View the public key from the private key:
-
-```bash
-uv run cli.py ssh show-pubkey
-```
-
-Add the public key to your Git hosting service (GitHub, GitLab, etc.) as a deploy key with write permissions.
-
-### Configuring a Git Remote
-
-Once you have performed manual sync (or successfully received a folder-related webhook event) you can add a git remote.
-
-```
-# Navigate to the git repo
-cd $RELAY_GIT_DATA_DIR/repos/<relay-guid>/<shared-folder-guid>/
-
-# Add a remote
-git remote add origin <remote url>
-```
 
 ### Directory Structure
 
