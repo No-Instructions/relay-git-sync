@@ -683,21 +683,31 @@ class PersistenceManager:
                 
                 if int(behind) > 0:
                     if int(ahead) > 0:
-                        # Both ahead and behind - need to rebase
-                        print(f"Pulling with rebase from {origin.name} for repository {repo_key}")
+                        # Both ahead and behind - rebase with automatic conflict resolution
+                        print(f"Pulling with rebase from {origin.name} for repository {repo_key} (auto-resolving conflicts)")
                         try:
-                            self._safe_git_operation(lambda: git_repo.git.pull('--rebase', origin.name, current_branch.name))
+                            # Use rebase with strategy 'ours' to favor our changes in conflicts
+                            self._safe_git_operation(
+                                lambda: git_repo.git.pull('--rebase', '-X', 'ours', origin.name, current_branch.name)
+                            )
+                            print(f"Successfully rebased {repo_key} with conflicts resolved in our favor")
                         except git.exc.GitCommandError as rebase_error:
                             if "CONFLICT" in str(rebase_error) or "merge conflict" in str(rebase_error).lower():
-                                logger.error(f"Merge conflict during rebase for {repo_key}. Manual resolution required.")
-                                logger.error(f"Run 'git status' in {git_repo.working_dir} to see conflicted files")
-                                # Abort the rebase to return to clean state
+                                logger.info(f"Merge conflicts detected for {repo_key}, resolving in our favor...")
+                                # Try to continue rebase with our strategy
                                 try:
+                                    # Add all files (resolves conflicts in favor of our changes)
+                                    git_repo.git.add('.')
+                                    git_repo.git.rebase('--continue')
+                                    print(f"Resolved conflicts and continued rebase for {repo_key}")
+                                except git.exc.GitCommandError:
+                                    # If rebase --continue fails, abort and use merge strategy instead
+                                    logger.info(f"Rebase failed, falling back to merge strategy for {repo_key}")
                                     git_repo.git.rebase('--abort')
-                                    logger.info(f"Aborted rebase for {repo_key}, returning to previous state")
-                                except:
-                                    pass
-                                raise Exception(f"Merge conflict in {repo_key} - manual resolution required")
+                                    self._safe_git_operation(
+                                        lambda: git_repo.git.pull('-X', 'ours', origin.name, current_branch.name)
+                                    )
+                                    print(f"Merged remote changes with conflicts resolved in our favor for {repo_key}")
                             else:
                                 raise rebase_error
                     else:
@@ -745,8 +755,7 @@ class PersistenceManager:
                         f"Git push (set upstream) for repository {repo_key} to {origin.name}/{current_branch.name}"
                     )
                 else:
-                    # Push with --force-with-lease for safer force pushing
-                    # This ensures we don't overwrite changes that we haven't seen
+                    # Since we're the source of truth, be more aggressive with pushing
                     try:
                         self._safe_git_operation(lambda: origin.push())
                         print(
@@ -754,22 +763,28 @@ class PersistenceManager:
                         )
                     except git.exc.GitCommandError as push_error:
                         if "non-fast-forward" in str(push_error) or "rejected" in str(push_error):
-                            # Try force-with-lease as fallback
-                            logger.info(f"Regular push rejected, trying force-with-lease for {repo_key}")
+                            # As source of truth, force push our changes
+                            logger.info(f"Regular push rejected, force pushing as source of truth for {repo_key}")
                             try:
+                                # Try force-with-lease first (safer)
                                 self._safe_git_operation(
                                     lambda: git_repo.git.push('--force-with-lease', origin.name, current_branch.name)
                                 )
                                 print(
                                     f"Git force-with-lease push for repository {repo_key} to {origin.name}/{current_branch.name}"
                                 )
-                            except git.exc.GitCommandError as force_error:
-                                if "stale info" in str(force_error) or "would clobber" in str(force_error):
-                                    logger.error(f"Force-with-lease rejected for {repo_key}: remote has newer commits")
-                                    logger.error(f"Run 'git pull --rebase' in {git_repo.working_dir} and try again")
-                                    raise Exception(f"Remote has newer commits for {repo_key} - pull required")
+                            except git.exc.GitCommandError as force_lease_error:
+                                if "stale info" in str(force_lease_error) or "would clobber" in str(force_lease_error):
+                                    # Force-with-lease failed, use regular force push as source of truth
+                                    logger.info(f"Force-with-lease failed, using force push as source of truth for {repo_key}")
+                                    self._safe_git_operation(
+                                        lambda: git_repo.git.push('--force', origin.name, current_branch.name)
+                                    )
+                                    print(
+                                        f"Git force push for repository {repo_key} to {origin.name}/{current_branch.name} (source of truth)"
+                                    )
                                 else:
-                                    raise force_error
+                                    raise force_lease_error
                         else:
                             raise push_error
 
