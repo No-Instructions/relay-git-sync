@@ -15,6 +15,63 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def startup_sync_all_folders(sync_engine, persistence_manager):
+    """Run initial sync for all configured folders on startup"""
+    try:
+        print("Running startup sync...")
+        
+        # Get all configured git connectors
+        git_connectors = persistence_manager.git_config.connectors
+        if not git_connectors:
+            print("No git connectors configured, skipping startup sync")
+            return
+            
+        print(f"Found {len(git_connectors)} configured git connectors")
+        
+        # Group connectors by relay_id to sync each relay
+        relays_to_sync = set(connector.relay_id for connector in git_connectors)
+        
+        total_synced = 0
+        total_failed = 0
+        
+        for relay_id in relays_to_sync:
+            try:
+                print(f"Syncing relay: {relay_id}")
+                
+                # Run sync for all folders in this relay
+                results = sync_engine.sync_relay_all_folders(relay_id)
+                
+                # Count results
+                for result in results:
+                    if result.success:
+                        total_synced += 1
+                        if result.operations:
+                            print(f"  ✓ Synced folder {result.folder_id} ({len(result.operations)} operations)")
+                        else:
+                            print(f"  ✓ Folder {result.folder_id} up to date")
+                    else:
+                        total_failed += 1
+                        print(f"  ✗ Failed to sync folder {result.folder_id}: {result.error}")
+                        
+            except Exception as e:
+                logger.warning(f"Error syncing relay {relay_id} during startup: {e}")
+                total_failed += 1
+        
+        # Commit any changes from startup sync
+        print("Committing startup sync changes...")
+        committed = persistence_manager.commit_changes()
+        if committed:
+            print("✓ Startup sync changes committed to git")
+        else:
+            print("No changes to commit from startup sync")
+            
+        print(f"Startup sync complete: {total_synced} folders synced, {total_failed} failed")
+        
+    except Exception as e:
+        logger.error(f"Error during startup sync: {e}")
+        print("Warning: Startup sync failed, continuing with server start...")
+
+
 def run_server(
     relay_server_url: str,
     relay_server_api_key: str,
@@ -36,6 +93,9 @@ def run_server(
         webhook_processor = WebhookProcessor(relay_client)
         operations_queue = OperationsQueue(sync_engine, commit_interval)
         web_server = create_server(webhook_processor, operations_queue, webhook_secret, persistence_manager)
+
+        # Run startup sync for all configured git connectors
+        startup_sync_all_folders(sync_engine, persistence_manager)
 
         # Start the server
         web_server.run(port=port)
