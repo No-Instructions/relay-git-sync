@@ -301,32 +301,46 @@ class RelayClient:
 
     @staticmethod
     def extract_relay_id(doc_id: str) -> str:
-        """Extract relay_id from document UUID (first UUID in compound ID)"""
+        """Extract relay_id from document UUID (first UUID in compound ID)
+        
+        Supports both 2-UUID format (relay_uuid-doc_uuid) and 3-UUID format 
+        (relay_uuid-middle_uuid-doc_uuid), always returning the first UUID.
+        """
         parts = doc_id.split("-")
-        if len(parts) < 10:  # Should be two UUIDs: 5 parts + 5 parts
+        if len(parts) < 10:  # Minimum: two UUIDs (5 parts + 5 parts)
             raise ValueError(
-                f"Invalid document ID format: {doc_id}. Expected compound UUID: relay_uuid-doc_uuid"
+                f"Invalid document ID format: {doc_id}. Expected at least 2 UUIDs in compound ID"
             )
         return "-".join(parts[:5])
 
     @staticmethod
     def extract_document_id(doc_id: str) -> str:
-        """Extract document_id from compound UUID (second UUID in compound ID)"""
+        """Extract document_id from compound UUID (last UUID in compound ID)
+        
+        Supports both 2-UUID format (relay_uuid-doc_uuid) and 3-UUID format
+        (relay_uuid-middle_uuid-doc_uuid), always returning the last UUID.
+        """
         parts = doc_id.split("-")
-        if len(parts) < 10:  # Should be two UUIDs: 5 parts + 5 parts
+        if len(parts) < 10:  # Minimum: two UUIDs (5 parts + 5 parts)
             raise ValueError(
-                f"Invalid document ID format: {doc_id}. Expected compound UUID: relay_uuid-doc_uuid"
+                f"Invalid document ID format: {doc_id}. Expected at least 2 UUIDs in compound ID"
             )
-        return "-".join(parts[5:])
+        # For 2 UUIDs (10 parts): return parts[5:10]
+        # For 3 UUIDs (15 parts): return parts[10:15] 
+        # Always take the last 5 parts
+        return "-".join(parts[-5:])
 
     @staticmethod
     def create_folder_resource_from_compound_id(compound_id: str) -> S3RemoteFolder:
-        """Create S3RemoteFolder from compound folder document ID"""
+        """Create S3RemoteFolder from compound folder document ID
+        
+        Supports both 2-UUID and 3-UUID formats, using first and last UUIDs.
+        """
         parts = compound_id.split("-")
-        if len(parts) != 10:  # Should be two UUIDs: 5 parts + 5 parts
-            raise ValueError(f"Invalid compound ID format: {compound_id}")
+        if len(parts) < 10 or len(parts) % 5 != 0:  # Must be complete UUIDs
+            raise ValueError(f"Invalid compound ID format: {compound_id}. Expected 2 or 3 complete UUIDs")
         relay_id = "-".join(parts[:5])
-        folder_id = "-".join(parts[5:])
+        folder_id = "-".join(parts[-5:])  # Always take the last UUID
         return S3RemoteFolder(relay_id, folder_id)
 
     def get_doc_object(self, resource: S3RNType) -> Doc:
