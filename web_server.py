@@ -71,9 +71,8 @@ class StarletteWebServer:
             # Process webhook
             logger.info(f"Processing webhook: {webhook_data}")
 
-            # Extract payload and process through WebhookProcessor
-            payload = webhook_data.get("payload", {})
-            change_data = self.webhook_processor.process_webhook(payload)
+            # Process webhook envelope
+            change_data = self.webhook_processor.process_webhook(webhook_data)
 
             if change_data is None:
                 logger.error("Failed to process webhook payload")

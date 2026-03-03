@@ -18,18 +18,19 @@ class WebhookProcessor:
     def __init__(self, relay_client: RelayClient):
         self.relay_client = relay_client
 
-    def process_webhook(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Process webhook payload and return document change data"""
+    def process_webhook(self, webhook_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Process webhook envelope and return document change data"""
         try:
+            payload = webhook_data.get("payload", {})
             doc_id = payload.get("doc_id")
-            timestamp = payload.get("timestamp")
+            timestamp = webhook_data.get("timestamp")
 
             if not doc_id:
                 logger.warning("Webhook payload missing doc_id")
                 return None
 
             if timestamp is None:
-                logger.warning("Webhook payload missing timestamp")
+                logger.warning("Webhook missing timestamp")
                 return None
 
             # Extract relay_id and document_id from compound doc_id
