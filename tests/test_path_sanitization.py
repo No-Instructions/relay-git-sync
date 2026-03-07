@@ -45,6 +45,11 @@ class TestPathSanitization:
         expected = os.path.join(base_dir, "subdir", "test.txt")
         assert result == os.path.abspath(expected)
 
+        # Test filename containing dots/ellipsis (not a traversal)
+        result = persistence_manager._sanitize_path("folder/file with dots....md", base_dir)
+        expected = os.path.join(base_dir, "folder", "file with dots....md")
+        assert result == os.path.abspath(expected)
+
     def test_sanitize_path_directory_traversal_attacks(self, persistence_manager, temp_dir):
         """Test that directory traversal attacks are blocked"""
         base_dir = os.path.join(temp_dir, "test_folder")

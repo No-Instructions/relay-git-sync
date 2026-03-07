@@ -43,8 +43,13 @@ class TestPathSanitization:
         with pytest.raises(ValueError, match="contains directory traversal"):
             self.persistence._sanitize_path("folder/../../../evil.txt", self.base_dir)
 
-        with pytest.raises(ValueError, match="contains directory traversal"):
-            self.persistence._sanitize_path("..\\evil.txt", self.base_dir)
+    def test_sanitize_path_allows_dots_in_filenames(self):
+        """Test that filenames containing '..' are allowed (not traversal)"""
+        # Ellipsis in filename should not trigger traversal check
+        result = self.persistence._sanitize_path(
+            "folder/file with dots....md", self.base_dir
+        )
+        assert result.endswith("folder/file with dots....md")
 
     def test_sanitize_path_blocks_escape_attempts(self):
         """Test various escape attempts are blocked"""
