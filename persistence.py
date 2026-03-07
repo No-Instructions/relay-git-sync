@@ -1028,8 +1028,8 @@ class PersistenceManager:
         # Remove leading slashes
         clean_path = path.lstrip("/")
 
-        # Reject paths containing .. components
-        if ".." in clean_path:
+        # Reject paths containing .. path components (but allow ".." in filenames)
+        if any(part == ".." for part in clean_path.split("/")):
             raise ValueError(f"Path '{path}' contains directory traversal sequences")
 
         # Build the full path
