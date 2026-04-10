@@ -336,8 +336,11 @@ class S3RN:
         """
         if isinstance(resource, S3RemoteFolder):
             return f"{resource.relay_id}-{resource.folder_id}"
-        elif isinstance(resource, (S3RemoteDocument, S3RemoteCanvas, S3RemoteFile)):
-            return f"{resource.relay_id}-{resource.document_id if hasattr(resource, 'document_id') else resource.canvas_id if hasattr(resource, 'canvas_id') else resource.file_id}"
+        elif isinstance(resource, S3RemoteFile):
+            # Files use 3-UUID format: relay_id-folder_id-file_id
+            return f"{resource.relay_id}-{resource.folder_id}-{resource.file_id}"
+        elif isinstance(resource, (S3RemoteDocument, S3RemoteCanvas)):
+            return f"{resource.relay_id}-{resource.document_id if hasattr(resource, 'document_id') else resource.canvas_id}"
         else:
             raise ValueError(f"Cannot create compound ID for resource type {type(resource)}")
 
