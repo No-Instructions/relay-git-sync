@@ -760,6 +760,12 @@ class PersistenceManager:
                     self._safe_git_fetch_with_debug(origin, repo_key)
                     return
 
+                # The remote-tracking ref only moves when this clone fetches or pushes,
+                # so it is stale whenever anything else (another connector, a human)
+                # pushed last. Refresh it or the ahead/behind comparison below is
+                # against a snapshot and we commit on a stale parent.
+                self._safe_git_operation(lambda: origin.fetch())
+
                 # Check if local branch is ahead of remote
                 ahead_behind = git_repo.git.rev_list(
                     "--left-right", "--count", f"{tracking_branch.name}...{current_branch.name}"
@@ -905,6 +911,29 @@ class PersistenceManager:
             logger.error(f"Error during conflict resolution for {repo_key}: {e}")
             logger.error(f"Conflict resolution traceback: {traceback.format_exc()}")
 
+    def _push_and_verify(self, origin, *args, **kwargs):
+        """Push and raise GitCommandError if any ref was rejected.
+
+        Remote.push() does not raise on rejected refs: when porcelain output was
+        parsed, the nonzero exit is swallowed and the rejection is only visible in
+        the returned PushInfo flags. Raising here lets callers route rejections
+        into the existing pull-and-retry recovery path.
+        """
+        push_infos = self._safe_git_operation(lambda: origin.push(*args, **kwargs))
+        failed = [
+            info
+            for info in push_infos
+            if info.flags
+            & (info.ERROR | info.REJECTED | info.REMOTE_REJECTED | info.REMOTE_FAILURE)
+        ]
+        if failed:
+            raise git.exc.GitCommandError(
+                ["git", "push"],
+                1,
+                stderr="push rejected: "
+                + "; ".join(info.summary.strip() for info in failed),
+            )
+
     def _push_to_remote(self, repo_key: str, git_repo: git.Repo):
         """Push commits to remote repository if configured"""
         try:
@@ -925,16 +954,14 @@ class PersistenceManager:
                 current_branch = git_repo.active_branch
                 if current_branch.tracking_branch() is None:
                     # Set upstream for first push
-                    self._safe_git_operation(
-                        lambda: origin.push(current_branch.name, set_upstream=True)
-                    )
+                    self._push_and_verify(origin, current_branch.name, set_upstream=True)
                     print(
                         f"Git push (set upstream) for repository {repo_key} to {origin.name}/{current_branch.name}"
                     )
                 else:
                     # Regular push - don't force to avoid clobbering other commits
                     try:
-                        self._safe_git_operation(lambda: origin.push())
+                        self._push_and_verify(origin)
                         print(
                             f"Git push for repository {repo_key} to {origin.name}/{current_branch.name}"
                         )
@@ -949,7 +976,7 @@ class PersistenceManager:
 
                             # Try pushing again after pull
                             try:
-                                self._safe_git_operation(lambda: origin.push())
+                                self._push_and_verify(origin)
                                 print(f"Git push successful after pull for repository {repo_key}")
                             except git.exc.GitCommandError:
                                 # If still failing, there might be an issue - log but don't force

@@ -637,3 +637,95 @@ class TestSSHKeyManager:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestOutOfBandPushRecovery:
+    """Connector must keep syncing when something else pushed to its branch first
+    (a second connector sharing the repo under a different prefix, or a human).
+
+    Previously this wedged permanently: the pre-commit pull compared against a
+    never-refreshed remote-tracking ref (logging "up to date with remote" while
+    actually behind), and the rejected push was invisible to the recovery path
+    because Remote.push() reports rejection via PushInfo flags rather than raising.
+    """
+
+    def setup_method(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+        self.remote_path = os.path.join(self.temp_dir, "remote.git")
+        git.Repo.init(self.remote_path, bare=True, initial_branch="main")
+
+        seed_path = os.path.join(self.temp_dir, "seed")
+        seed = git.Repo.clone_from(self.remote_path, seed_path)
+        self._configure_identity(seed)
+        with open(os.path.join(seed_path, "seed.md"), "w") as f:
+            f.write("seed\n")
+        seed.git.add(A=True)
+        seed.index.commit("initial")
+        seed.git.push("origin", "main")
+
+        # "other" simulates whoever else pushes to the branch; "mine" is this
+        # connector's clone, driven through the real PersistenceManager paths.
+        self.other_path = os.path.join(self.temp_dir, "other")
+        self.mine_path = os.path.join(self.temp_dir, "mine")
+        self.other = git.Repo.clone_from(self.remote_path, self.other_path)
+        self.mine = git.Repo.clone_from(self.remote_path, self.mine_path)
+        self._configure_identity(self.other)
+        self._configure_identity(self.mine)
+
+        self.pm = PersistenceManager(self.temp_dir)
+        self.repo_key = "relay/folder"
+        self.pm.git_repos[self.repo_key] = self.mine
+
+    def teardown_method(self):
+        shutil.rmtree(self.temp_dir)
+
+    def _configure_identity(self, repo):
+        repo.git.config("user.email", "test@example.com")
+        repo.git.config("user.name", "test")
+
+    def _other_pushes(self, name):
+        with open(os.path.join(self.other_path, name), "w") as f:
+            f.write("content\n")
+        self.other.git.add(A=True)
+        self.other.index.commit(f"other: {name}")
+        self.other.git.pull("--rebase", "origin", "main")
+        self.other.git.push("origin", "main")
+
+    def _reached_remote(self, hexsha):
+        return hexsha in git.Repo(self.remote_path).git.rev_list("main").splitlines()
+
+    def test_commit_cycle_syncs_despite_remote_advancing(self):
+        for n in range(3):
+            self._other_pushes(f"other-{n}.md")
+            with open(os.path.join(self.mine_path, f"mine-{n}.md"), "w") as f:
+                f.write("mine\n")
+            assert self.pm.commit_changes()
+            assert self._reached_remote(self.mine.head.commit.hexsha), (
+                f"cycle {n}: connector commit never reached the remote"
+            )
+
+    def test_rejected_push_triggers_recovery(self):
+        # A commit already created on a stale parent: the race window where the
+        # remote advanced between this connector's pull and its push.
+        self._other_pushes("racing.md")
+        with open(os.path.join(self.mine_path, "mine.md"), "w") as f:
+            f.write("mine\n")
+        self.mine.git.add(A=True)
+        self.mine.index.commit("stale-parent commit")
+
+        self.pm._push_to_remote(self.repo_key, self.mine)
+
+        assert self._reached_remote(self.mine.head.commit.hexsha), (
+            "rejected push was not recovered (rebase + re-push)"
+        )
+
+    def test_push_and_verify_raises_on_rejection(self):
+        self._other_pushes("racing.md")
+        with open(os.path.join(self.mine_path, "mine.md"), "w") as f:
+            f.write("mine\n")
+        self.mine.git.add(A=True)
+        self.mine.index.commit("stale-parent commit")
+
+        with pytest.raises(git.exc.GitCommandError, match="rejected"):
+            self.pm._push_and_verify(self.mine.remotes.origin)
