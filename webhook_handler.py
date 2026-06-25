@@ -23,7 +23,7 @@ class WebhookProcessor:
         try:
             payload = webhook_data.get("payload", {})
             doc_id = payload.get("doc_id")
-            timestamp = webhook_data.get("timestamp")
+            timestamp = payload.get("timestamp") or webhook_data.get("timestamp")
 
             if not doc_id:
                 logger.warning("Webhook payload missing doc_id")
