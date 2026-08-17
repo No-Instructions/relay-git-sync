@@ -2,6 +2,7 @@
 
 import atexit
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -11,10 +12,12 @@ import subprocess
 import threading
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional, Set
 
 import git
 
+import attribution
+from attribution import AuthorResolver, GitAuthor
 from git_config import GitConnectorConfig, default_git_config_file
 from models import get_s3rn_resource_category
 from s3rn import (
@@ -28,6 +31,25 @@ from s3rn import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _AuthorBucket(NamedTuple):
+    """One pending commit: the dominant author's files plus any co-authors."""
+
+    paths: List[str]
+    co_authors: Set[GitAuthor]
+
+
+class _GroupedChanges(NamedTuple):
+    groups: Dict[GitAuthor, _AuthorBucket]
+    deferred_deletions: List[str]
+
+
+# Relay delivers a rename as a delete event and a create event, which can land
+# many seconds apart - across commit cycles. Hold an unpaired deletion out of
+# commits this long so its byte-identical re-add can join it in one commit
+# (which is what lets git detect the rename).
+DELETION_PAIRING_WINDOW_S = 90.0
 
 
 class SSHKeyManager:
@@ -149,6 +171,15 @@ class PersistenceManager:
 
     def __init__(self, data_dir: str = ".", git_config_file: Optional[str] = None):
         self.data_dir = data_dir
+        # Set by the app after construction; when present, commits are grouped
+        # per author of the changed content (see commit_changes).
+        self.author_resolver: Optional[AuthorResolver] = None
+        self._deletion_first_seen: Dict[str, float] = {}  # "repo_key:path" -> monotonic time
+        # True while any repo holds deferred (young, unpaired) deletions. The
+        # commit timer must keep calling commit_changes while this is set, even
+        # with no new sync events - otherwise a deferral outlives its pairing
+        # window with no pass left to release it.
+        self.deferred_deletions_pending = False
         self.git_repos: Dict[str, git.Repo] = {}  # Now keyed by "relay_id/folder_id"
         self.git_lock = threading.Lock()  # Prevent concurrent git operations
         # Last fetch time per repo for the unpushed-commit check, keyed by repo_key
@@ -872,6 +903,121 @@ class PersistenceManager:
 
         return pushed_count
 
+    def _changed_markdown_paths(self, git_repo: git.Repo) -> List[str]:
+        """Repo-relative paths of modified/untracked .md files (no deletions)."""
+        changed = [item.a_path for item in git_repo.index.diff(None) if item.change_type != "D"]
+        return [p for p in changed + list(git_repo.untracked_files) if p.endswith(".md")]
+
+    def _deleted_markdown_paths(self, git_repo: git.Repo) -> List[str]:
+        """Repo-relative paths of .md files deleted from the working tree."""
+        return [
+            item.a_path
+            for item in git_repo.index.diff(None)
+            if item.change_type == "D" and item.a_path.endswith(".md")
+        ]
+
+    def _group_changes_by_author(self, repo_key: str, git_repo: git.Repo) -> _GroupedChanges:
+        """Group this repo's changed markdown files by the dominant author of their changes.
+
+        Files whose author cannot be resolved (no doc mapping, deletion-only
+        change, unmapped user, endpoint unavailable) are simply not grouped and
+        fall through to the default-identity commit. A deletion whose HEAD
+        content byte-matches a new file's content is the old half of a rename;
+        it joins the new path's bucket so git's rename detection can connect
+        the history across the commit. An unpaired deletion younger than
+        DELETION_PAIRING_WINDOW_S is deferred - kept out of every commit -
+        in case its other half hasn't arrived from Relay yet.
+        """
+        if self.author_resolver is None or not self.author_resolver.authors:
+            return _GroupedChanges({}, [])
+
+        started = time.monotonic()
+        relay_id, folder_id = repo_key.split("/", 1)
+        connector = self.git_config.get_connector_for_folder(relay_id, folder_id)
+        prefix = (connector.prefix.strip("/") + "/") if connector and connector.prefix else ""
+        folder_files = self.local_file_state.get(relay_id, {}).get(folder_id, {})
+
+        untracked = set(git_repo.untracked_files)
+        changed_paths = self._changed_markdown_paths(git_repo)
+        groups: Dict[GitAuthor, _AuthorBucket] = {}
+        new_content_author: Dict[str, GitAuthor] = {}  # sha256 of new file content -> author
+        for repo_path in changed_paths:
+            if prefix and not repo_path.startswith(prefix):
+                continue
+
+            vault_path = "/" + repo_path[len(prefix) :]
+            doc_id = (folder_files.get(vault_path) or {}).get("doc_id")
+            if not doc_id:
+                continue
+
+            try:
+                with open(os.path.join(git_repo.working_dir, repo_path), encoding="utf-8") as f:
+                    new_content = f.read()
+            except OSError as e:
+                logger.warning(f"Could not read {repo_path} for attribution: {e}")
+                continue
+
+            if repo_path in untracked:
+                changed_ranges = [(0, len(new_content))] if new_content else []
+            else:
+                try:
+                    changed_ranges = attribution.line_ranges_to_char_ranges(
+                        new_content,
+                        attribution.new_side_line_ranges(
+                            git_repo.git.diff("HEAD", "-U0", "--", repo_path)
+                        ),
+                    )
+                except git.GitCommandError as e:
+                    logger.warning(f"Could not diff {repo_path} for attribution: {e}")
+                    continue
+
+            authors = self.author_resolver.resolve(
+                S3RemoteDocument(relay_id, folder_id, doc_id), new_content, changed_ranges
+            )
+            if not authors:
+                continue
+
+            bucket = groups.setdefault(authors[0], _AuthorBucket([], set()))
+            bucket.paths.append(repo_path)
+            bucket.co_authors.update(authors[1:])
+            if repo_path in untracked:
+                new_content_author[hashlib.sha256(new_content.encode()).hexdigest()] = authors[0]
+
+        deleted_paths = self._deleted_markdown_paths(git_repo)
+        deferred: List[str] = []
+        for deleted in deleted_paths:
+            first_seen = self._deletion_first_seen.setdefault(
+                f"{repo_key}:{deleted}", time.monotonic()
+            )
+            try:
+                content = git_repo.head.commit.tree[deleted].data_stream.read().decode("utf-8")
+            except (KeyError, UnicodeDecodeError, ValueError):
+                continue
+
+            author = new_content_author.get(hashlib.sha256(content.encode()).hexdigest())
+            if author:
+                groups[author].paths.append(deleted)
+            elif time.monotonic() - first_seen < DELETION_PAIRING_WINDOW_S:
+                deferred.append(deleted)
+
+        # forget deletions that are no longer pending (committed or resurrected)
+        still_deleted = {f"{repo_key}:{p}" for p in deleted_paths}
+        for key in [
+            k
+            for k in self._deletion_first_seen
+            if k.startswith(f"{repo_key}:") and k not in still_deleted
+        ]:
+            del self._deletion_first_seen[key]
+
+        elapsed = time.monotonic() - started
+        if elapsed > 5.0:
+            logger.warning(
+                f"Author attribution for {repo_key} took {elapsed:.1f}s "
+                f"({len(changed_paths)} changed markdown files); "
+                f"commits are delayed while this runs"
+            )
+        return _GroupedChanges(groups, deferred)
+
     def commit_changes(self) -> bool:
         """Commit changes to git repositories if there are any, and push to remote if configured
 
@@ -880,6 +1026,7 @@ class PersistenceManager:
         """
         try:
             committed_any = False
+            any_deferred = False
             # Check each folder repository for changes
             for repo_key, git_repo in self.git_repos.items():
                 if not self._is_repo_key_configured(repo_key):
@@ -893,17 +1040,47 @@ class PersistenceManager:
                     if git_repo.remotes:
                         self._pull_from_remote(repo_key, git_repo)
 
-                    # Add all changes using safe git operation
+                    commit_msg = f"Auto-sync: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+
+                    # One commit per dominant author of the changed content
+                    # (with co-author trailers for other contributors), then a
+                    # default-identity commit for whatever remains (released
+                    # deletions, unattributable files, non-markdown).
+                    grouped = self._group_changes_by_author(repo_key, git_repo)
+                    any_deferred = any_deferred or bool(grouped.deferred_deletions)
+                    for author, bucket in grouped.groups.items():
+                        msg = commit_msg
+                        co_authors = sorted(bucket.co_authors - {author}, key=lambda a: a.email)
+                        if co_authors:
+                            msg += "\n\n" + "\n".join(
+                                f"Co-authored-by: {a.name} <{a.email}>" for a in co_authors
+                            )
+                        self._safe_git_operation(lambda: git_repo.git.add("--", *bucket.paths))
+                        self._safe_git_operation(
+                            lambda: git_repo.index.commit(
+                                msg, author=git.Actor(author.name, author.email)
+                            )
+                        )
+                        print(
+                            f"Git commit for repository {repo_key}: {commit_msg} "
+                            f"(author: {author.name}, {len(bucket.paths)} files"
+                            + (f", {len(co_authors)} co-authors)" if co_authors else ")")
+                        )
+                        committed_any = True
+
                     self._safe_git_operation(lambda: git_repo.git.add(A=True))
-
-                    # Create commit message
-                    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                    commit_msg = f"Auto-sync: {timestamp}"
-
-                    # Commit changes using safe git operation
-                    self._safe_git_operation(lambda: git_repo.index.commit(commit_msg))
-                    print(f"Git commit for repository {repo_key}: {commit_msg}")
-                    committed_any = True
+                    if grouped.deferred_deletions and git_repo.head.is_valid():
+                        # unstage young unpaired deletions - their re-add half
+                        # may still arrive; see DELETION_PAIRING_WINDOW_S
+                        self._safe_git_operation(
+                            lambda: git_repo.git.reset(
+                                "-q", "HEAD", "--", *grouped.deferred_deletions
+                            )
+                        )
+                    if not git_repo.head.is_valid() or git_repo.index.diff("HEAD"):
+                        self._safe_git_operation(lambda: git_repo.index.commit(commit_msg))
+                        print(f"Git commit for repository {repo_key}: {commit_msg}")
+                        committed_any = True
 
                     # Push to remote if configured
                     self._push_to_remote(repo_key, git_repo)
@@ -912,9 +1089,12 @@ class PersistenceManager:
                     logger.info(f"Pushing previously unpushed commits for repository {repo_key}")
                     self._push_to_remote(repo_key, git_repo)
 
+            self.deferred_deletions_pending = any_deferred
             return committed_any
 
         except Exception as e:
+            # deliberately not clearing deferred_deletions_pending: a failed
+            # pass must not close the timer gate on pending deferrals
             logger.error(f"Error committing to git: {e}")
             logger.error(f"Git commit traceback: {traceback.format_exc()}")
             return False

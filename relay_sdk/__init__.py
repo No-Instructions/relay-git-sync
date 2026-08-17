@@ -400,6 +400,11 @@ class RelayClient:
     def get_doc_as_update(self, doc_id: str) -> bytes:
         return self._request(f"d/{_quote_path_part(doc_id)}/as-update").content
 
+    def get_attributed_content(self, doc_id: str, root: str = "contents") -> Dict[str, Any]:
+        return self._request(
+            f"d/{_quote_path_part(doc_id)}/attributed-content", params={"root": root}
+        ).json()
+
     def update_doc(self, doc_id: str, update: bytes) -> None:
         self._request(f"d/{_quote_path_part(doc_id)}/update", method="POST", data=update)
 

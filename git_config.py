@@ -249,6 +249,7 @@ class GitConnectorConfig:
         self.explicit_known_hosts: List[str] = []
         self.known_hosts_fetch_errors: Dict[str, str] = {}
         self.connectors: List[GitConnector] = []
+        self.authors: Dict[str, str] = {}
         self._load_config()
 
     def _load_config(self):
@@ -290,6 +291,15 @@ class GitConnectorConfig:
                     return
                 self.explicit_known_hosts = known_hosts
                 self.known_hosts = known_hosts
+
+            authors = config_data.get("authors", {})
+            if authors:
+                if not isinstance(authors, dict) or not all(
+                    isinstance(v, str) for v in authors.values()
+                ):
+                    logger.error("authors must be a table of 'Name <email>' strings in TOML config")
+                    return
+                self.authors = authors
 
             # Parse git_connector entries
             git_connectors = config_data.get("git_connector", [])

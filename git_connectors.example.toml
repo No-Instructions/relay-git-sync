@@ -70,3 +70,15 @@ prefix = ""  # Sync to repository root
 # HTTPS Authentication:
 # For private repos, you may need to embed credentials in the URL
 # or configure git credentials separately
+
+# Optional: per-author commits. Maps relay user ids (the same ids that appear
+# in the relay server's PUD "users" map and connection logs) to git author
+# identities. When present - and when the relay server supports the
+# /d/:doc_id/attributed-content endpoint - each sync commit is authored by
+# whoever wrote the majority of the changed content, so git blame shows real
+# people. Changes that can't be attributed (deletions, unmapped users, binary
+# files) are committed with the default identity as before.
+#
+# [authors]
+# "relay_user_id_1" = "Ada Lovelace <ada@example.com>"
+# "relay_user_id_2" = "Bob Bobson <bob@example.com>"

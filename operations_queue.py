@@ -145,7 +145,14 @@ class OperationsQueue:
 
     def _maybe_commit_changes(self):
         """Commit changes to git repositories if there are any"""
-        if not self.sync_state.has_changes:
+        # deferred_deletions_pending keeps the timer alive past has_changes
+        # resets: a commit of unrelated work returns True and clears the flag
+        # while young unpaired deletions are still being held back, and with
+        # no later events the deferrals would otherwise never be released.
+        if not (
+            self.sync_state.has_changes
+            or self.sync_engine.persistence_manager.deferred_deletions_pending
+        ):
             return
 
         try:

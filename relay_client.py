@@ -49,6 +49,21 @@ class RelayClient:
         """Get document update from the Relay server"""
         return self.dm.get_doc_as_update(doc_id)
 
+    def fetch_attributed_spans(self, resource: S3RNType) -> Optional[list]:
+        """Fetch per-author spans of a doc's current text from the Relay server.
+
+        Requires a relay server with the /d/:doc_id/attributed-content
+        endpoint; returns None (attribution falls back to the default
+        identity) when the server doesn't support it or the doc has no
+        "contents" root.
+        """
+        compound_doc_id = S3RN.get_compound_document_id(resource)
+        try:
+            return self.dm.get_attributed_content(compound_doc_id).get("spans")
+        except Exception as e:
+            logger.debug(f"Attributed content unavailable for {compound_doc_id}: {e}")
+            return None
+
     def fetch_document_content(self, resource: S3RNType) -> Optional[str]:
         """Fetch document content from remote using S3RN resource"""
         try:
