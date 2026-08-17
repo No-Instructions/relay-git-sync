@@ -1012,6 +1012,21 @@ class PersistenceManager:
             logger.warning(f"Failed to repair upstream tracking for {repo_key}: {e}")
             return None
 
+    def _abort_stuck_rebase(self, git_repo: git.Repo, repo_key: str):
+        """Abort any in-progress rebase so subsequent git operations don't wedge."""
+        rebase_merge_dir = os.path.join(git_repo.git_dir, "rebase-merge")
+        rebase_apply_dir = os.path.join(git_repo.git_dir, "rebase-apply")
+        if os.path.isdir(rebase_merge_dir) or os.path.isdir(rebase_apply_dir):
+            logger.warning(f"Aborting stuck rebase for {repo_key}")
+            try:
+                git_repo.git.rebase("--abort")
+            except git.exc.GitCommandError as e:
+                logger.warning(
+                    f"rebase --abort failed for {repo_key}, removing rebase state manually: {e}"
+                )
+                shutil.rmtree(rebase_merge_dir, ignore_errors=True)
+                shutil.rmtree(rebase_apply_dir, ignore_errors=True)
+
     def _pull_from_remote(self, repo_key: str, git_repo: git.Repo):
         """Pull latest changes from remote repository using rebase"""
         try:
@@ -1021,6 +1036,8 @@ class PersistenceManager:
             if not git_repo.remotes:
                 logger.debug(f"No remotes configured for repository {repo_key}, skipping pull")
                 return
+
+            self._abort_stuck_rebase(git_repo, repo_key)
 
             # Get the default remote (usually 'origin')
             origin = (
@@ -1108,6 +1125,7 @@ class PersistenceManager:
                                         f"Merged remote changes with conflicts resolved for {repo_key}"
                                     )
                             else:
+                                self._abort_stuck_rebase(git_repo, repo_key)
                                 raise rebase_error
                     else:
                         # Only behind - fast-forward pull
