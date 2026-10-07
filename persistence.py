@@ -146,6 +146,9 @@ class PersistenceManager:
     MIRROR_BASE_DIR = "repos"
     LOCAL_STATE_FILE = "local_state.json"
     UNPUSHED_CHECK_FETCH_INTERVAL_SECONDS = 300
+    STALLED_PUSH_WARNING_SECONDS = int(os.getenv("RELAY_GIT_STALLED_PUSH_WARNING_SECONDS", "300"))
+    STALLED_PUSH_ERROR_SECONDS = int(os.getenv("RELAY_GIT_STALLED_PUSH_ERROR_SECONDS", "1800"))
+    PUSH_RETRY_INTERVAL_SECONDS = 60
 
     def __init__(self, data_dir: str = ".", git_config_file: Optional[str] = None):
         self.data_dir = data_dir
@@ -153,6 +156,7 @@ class PersistenceManager:
         self.git_lock = threading.Lock()  # Prevent concurrent git operations
         # Last fetch time per repo for the unpushed-commit check, keyed by repo_key
         self._unpushed_check_fetch_times: Dict[str, float] = {}
+        self._failed_push_times: Dict[str, float] = {}  # repo_key -> monotonic time
 
         # Initialize git connector configuration first to get known hosts
         config_path = default_git_config_file(self.data_dir, git_config_file)
@@ -905,12 +909,19 @@ class PersistenceManager:
                     print(f"Git commit for repository {repo_key}: {commit_msg}")
                     committed_any = True
 
-                    # Push to remote if configured
-                    self._push_to_remote(repo_key, git_repo)
+                    # Push to remote if configured. While a push is failing, new
+                    # commits wait for the next retry rather than each trying again.
+                    if not self._push_retry_too_soon(repo_key):
+                        self._push_to_remote(repo_key, git_repo)
 
-                elif git_repo.remotes and self._has_unpushed_commits(repo_key, git_repo):
-                    logger.info(f"Pushing previously unpushed commits for repository {repo_key}")
-                    self._push_to_remote(repo_key, git_repo)
+                elif git_repo.remotes and not self._push_retry_too_soon(repo_key):
+                    if self._has_unpushed_commits(repo_key, git_repo):
+                        logger.info(
+                            f"Pushing previously unpushed commits for repository {repo_key}"
+                        )
+                        self._push_to_remote(repo_key, git_repo)
+                    else:
+                        self._failed_push_times.pop(repo_key, None)
 
             return committed_any
 
@@ -1218,6 +1229,52 @@ class PersistenceManager:
                 stderr="push rejected: " + "; ".join(info.summary.strip() for info in failed),
             )
 
+    @staticmethod
+    def _push_error_reason(error: git.exc.GitCommandError) -> str:
+        return " ".join((error.stderr or str(error)).split())
+
+    @property
+    def has_failed_pushes(self) -> bool:
+        """True while any repo's last push failed, so the commit timer keeps retrying it."""
+        return bool(self._failed_push_times)
+
+    def _push_retry_too_soon(self, repo_key: str) -> bool:
+        failed_at = self._failed_push_times.get(repo_key)
+        return (
+            failed_at is not None
+            and time.monotonic() - failed_at < self.PUSH_RETRY_INTERVAL_SECONDS
+        )
+
+    def _warn_if_push_stalled(self, repo_key: str, git_repo: git.Repo):
+        """Warn when the oldest commit no remote has accepted is old.
+
+        A single failed push is usually transient (the remote host had an outage,
+        or another writer raced us) and a later push recovers it. The age of the
+        oldest unpushed commit tells a stuck connector apart from that.
+        """
+        try:
+            commit_times = git_repo.git.log("--format=%ct", "HEAD", "--not", "--remotes").split()
+        except git.exc.GitCommandError as e:
+            logger.warning(f"Could not measure unpushed commits for {repo_key}: {e}")
+            return
+
+        if not commit_times:
+            return
+
+        age_seconds = time.time() - min(int(t) for t in commit_times)
+        backlog = f"{len(commit_times)} commits unpushed, oldest from {int(age_seconds // 60)} minutes ago"
+        if age_seconds >= self.STALLED_PUSH_ERROR_SECONDS:
+            logger.error(
+                f"Push stalled over {self.STALLED_PUSH_ERROR_SECONDS // 60} minutes "
+                f"for {repo_key}: {backlog}"
+            )
+        elif age_seconds >= self.STALLED_PUSH_WARNING_SECONDS:
+            logger.warning(f"Push stalled for {repo_key}: {backlog}")
+
+    def _record_push_failure(self, repo_key: str, git_repo: git.Repo):
+        self._failed_push_times[repo_key] = time.monotonic()
+        self._warn_if_push_stalled(repo_key, git_repo)
+
     def _push_to_remote(self, repo_key: str, git_repo: git.Repo):
         """Push commits to remote repository if configured"""
         try:
@@ -1252,6 +1309,7 @@ class PersistenceManager:
                     print(
                         f"Git push (set upstream) for repository {repo_key} to {origin.name}/{current_branch.name}"
                     )
+                    self._failed_push_times.pop(repo_key, None)
                 else:
                     # Regular push - don't force to avoid clobbering other commits
                     try:
@@ -1259,12 +1317,13 @@ class PersistenceManager:
                         print(
                             f"Git push for repository {repo_key} to {origin.name}/{current_branch.name}"
                         )
+                        self._failed_push_times.pop(repo_key, None)
                     except git.exc.GitCommandError as push_error:
                         if "non-fast-forward" in str(push_error) or "rejected" in str(push_error):
                             # Push rejected - this means there are remote commits we haven't seen
                             # Pull first to merge remote changes, then push again
                             logger.info(
-                                f"Push rejected for {repo_key}, pulling remote changes first"
+                                f"Push rejected for {repo_key}, pulling remote changes first: {self._push_error_reason(push_error)}"
                             )
                             self._pull_from_remote(repo_key, git_repo)
 
@@ -1272,11 +1331,13 @@ class PersistenceManager:
                             try:
                                 self._push_and_verify(origin)
                                 print(f"Git push successful after pull for repository {repo_key}")
-                            except git.exc.GitCommandError:
+                                self._failed_push_times.pop(repo_key, None)
+                            except git.exc.GitCommandError as retry_error:
                                 # If still failing, there might be an issue - log but don't force
                                 logger.warning(
-                                    f"Push still failing for {repo_key} after pull, skipping"
+                                    f"Push still failing for {repo_key} after pull, skipping: {self._push_error_reason(retry_error)}"
                                 )
+                                self._record_push_failure(repo_key, git_repo)
                         else:
                             raise push_error
 
@@ -1284,18 +1345,22 @@ class PersistenceManager:
                 # Handle common push errors gracefully
                 if "non-fast-forward" in str(e):
                     logger.warning(
-                        f"Push rejected for repository {repo_key}: non-fast-forward. Manual intervention may be needed."
+                        f"Push rejected for repository {repo_key}: non-fast-forward. Manual intervention may be needed: {self._push_error_reason(e)}"
                     )
                 elif "Permission denied" in str(e) or "Authentication failed" in str(e):
                     logger.warning(
-                        f"Push failed for repository {repo_key}: authentication error. Check SSH keys or credentials."
+                        f"Push failed for repository {repo_key}: authentication error. Check SSH keys or credentials: {self._push_error_reason(e)}"
                     )
                 else:
-                    logger.error(f"Push failed for repository {repo_key}: {e}")
+                    logger.error(
+                        f"Push failed for repository {repo_key}: {self._push_error_reason(e)}"
+                    )
+                self._record_push_failure(repo_key, git_repo)
 
         except Exception as e:
             logger.error(f"Error pushing to remote for repository {repo_key}: {e}")
             logger.error(f"Push traceback: {traceback.format_exc()}")
+            self._record_push_failure(repo_key, git_repo)
 
     def get_git_repo(self, relay_id: str, folder_id: str) -> Optional[git.Repo]:
         """Get git repository for a folder within a relay"""
