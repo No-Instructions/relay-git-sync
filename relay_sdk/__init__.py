@@ -397,8 +397,10 @@ class RelayClient:
         result = self.create_doc(doc_id)
         return self.get_client_token(result)
 
-    def get_doc_as_update(self, doc_id: str) -> bytes:
-        return self._request(f"d/{_quote_path_part(doc_id)}/as-update").content
+    def get_doc_as_update(
+        self, doc_id: str, token: Union[str, None, object] = _DEFAULT_TOKEN
+    ) -> bytes:
+        return self._request(f"d/{_quote_path_part(doc_id)}/as-update", token=token).content
 
     def update_doc(self, doc_id: str, update: bytes) -> None:
         self._request(f"d/{_quote_path_part(doc_id)}/update", method="POST", data=update)

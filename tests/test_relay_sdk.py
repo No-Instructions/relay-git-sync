@@ -146,3 +146,13 @@ def test_decode_subdocs_frame():
     assert message["type"] == "subdocs"
     assert message["snapshots"]["subdoc-abc"].snapshot == b"\x01\x02"
     assert message["snapshots"]["subdoc-abc"].last_seen == 123
+
+
+def test_document_read_token_override_does_not_change_default(monkeypatch):
+    request = Mock(return_value=FakeResponse(content=b"update"))
+    monkeypatch.setattr(relay_sdk.requests, "request", request)
+    client = RelayClient("https://relay.example", token="MAIN")
+    client.get_doc_as_update("note", token="FOLDER")
+    assert request.call_args.kwargs["headers"] == {"Authorization": "Bearer FOLDER"}
+    client.get_doc_as_update("folder")
+    assert request.call_args.kwargs["headers"] == {"Authorization": "Bearer MAIN"}

@@ -8,7 +8,7 @@ import json
 import secrets
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cbor2
@@ -27,6 +27,11 @@ CWT_CLAIM_AUDIENCE = 3
 CWT_CLAIM_EXPIRATION = 4
 CWT_CLAIM_ISSUED_AT = 6
 CWT_CLAIM_SCOPE = -80201
+# relay-server's routing-channel claim. A document first loaded with a token
+# carrying it routes its events to that channel (its shared folder); one loaded
+# without it routes to itself, and folder subscribers never see its edits
+# until the server unloads it.
+CWT_CLAIM_CHANNEL = -80202
 
 DEFAULT_ISSUER = "relay-server"
 KEY_ID_PREFIX = "git-sync"
@@ -78,6 +83,9 @@ class RelayAuthSetup:
     keypair: RelayKeypair
     token: RelayToken
     webhook: RelayWebhook | None
+    # Shared folder ID -> a token with the same scope whose channel claim is
+    # that folder, for reading the folder's documents (RELAY_FOLDER_TOKENS).
+    folder_tokens: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -154,6 +162,7 @@ def create_cwt_sign1_token(
     scope: str,
     issued_at: int,
     expires_at: int | None,
+    channel: str | None = None,
 ) -> str:
     protected = cbor2.dumps(
         {
@@ -169,6 +178,8 @@ def create_cwt_sign1_token(
     }
     if expires_at is not None:
         claims[CWT_CLAIM_EXPIRATION] = expires_at
+    if channel is not None:
+        claims[CWT_CLAIM_CHANNEL] = channel
     payload = cbor2.dumps(claims)
     signature_payload = cbor2.dumps(["Signature1", protected, b"", payload])
     signature = private_key.sign(signature_payload)
@@ -185,6 +196,7 @@ def generate_setup(
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
     now: int | None = None,
+    folder_ids: list[str] | None = None,
 ) -> RelayAuthSetup:
     if not server_url:
         raise ValueError("server_url is required")
@@ -217,6 +229,18 @@ def generate_setup(
         issued_at=issued_at,
         expires_at=expires_at,
     )
+    folder_tokens = {
+        folder_id: create_cwt_sign1_token(
+            signing_key,
+            key_id=keypair.key_id,
+            server_url=server_url,
+            scope=scope,
+            issued_at=issued_at,
+            expires_at=expires_at,
+            channel=f"{relay_prefix(relay_id)}{folder_id}",
+        )
+        for folder_id in folder_ids or []
+    }
     webhook = None
     if webhook_url:
         webhook = RelayWebhook(
@@ -224,7 +248,9 @@ def generate_setup(
             secret=webhook_secret or generate_webhook_secret(),
             prefix=relay_prefix(relay_id),
         )
-    return RelayAuthSetup(keypair=keypair, token=token, webhook=webhook)
+    return RelayAuthSetup(
+        keypair=keypair, token=token, webhook=webhook, folder_tokens=folder_tokens
+    )
 
 
 def setup_as_json(setup: RelayAuthSetup) -> str:
@@ -245,6 +271,7 @@ def setup_as_json(setup: RelayAuthSetup) -> str:
                     "env": {
                         "RELAY_SERVER_URL": setup.token.server_url,
                         "RELAY_SERVER_API_KEY": setup.token.value,
+                        **folder_tokens_env(setup),
                     },
                 },
                 "webhook": webhook_as_json(setup.webhook),
@@ -336,9 +363,16 @@ def render_setup_markdown(setup: RelayAuthSetup) -> str:
         expires_at=decoded_expires_at(setup.token.expires_at),
         expiry_note=expiry_note(setup.token.expires_at),
         relay_webhook_toml=relay_webhook_toml(setup.webhook),
-        git_sync_webhook_env=git_sync_webhook_env(setup.webhook),
+        git_sync_webhook_env=git_sync_webhook_env(setup.webhook)
+        + "".join(f"\n{name}='{value}'" for name, value in folder_tokens_env(setup).items()),
         webhook_note=webhook_note(setup.webhook),
     )
+
+
+def folder_tokens_env(setup: RelayAuthSetup) -> dict:
+    if not setup.folder_tokens:
+        return {}
+    return {"RELAY_FOLDER_TOKENS": json.dumps(setup.folder_tokens, sort_keys=True)}
 
 
 def relay_webhook_toml(webhook: RelayWebhook | None) -> str:
