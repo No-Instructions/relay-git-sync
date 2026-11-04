@@ -419,8 +419,10 @@ def print_setup(setup: RelayAuthSetup) -> None:
                     for line in Segment.split_lines(console.render(syntax, options)):
                         while line and line[-1].text.isspace():
                             line.pop()
-                        yield from line
+                        # The erase runs at column zero, before the line's text, so it
+                        # cannot clear any character the line writes.
                         yield erase_line
+                        yield from line
                         yield Segment.line()
                     yield erase_line
                     yield Segment.line()

@@ -1,7 +1,9 @@
 import json
 import re
+import unicodedata
 
 import cbor2
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from relay_auth import (
@@ -206,6 +208,113 @@ def test_tty_setup_code_blocks_use_erase_line_background(monkeypatch, capsys):
             continue
         before_erase = line.split("\x1b[K", 1)[0]
         assert not ansi_pattern.sub("", before_erase).endswith(" ")
+
+
+def terminal_screen_text(output: str, width: int) -> str:
+    """Model terminals that keep the cursor on the last column after a full-width row.
+
+    This matches libvterm; xterm.js handles pending wrap differently. The model
+    supports one- and two-cell text, SGR, EL, and a TTY's LF-to-CRLF translation.
+    Combining characters and other terminal controls are outside its scope.
+    """
+    rows = [[" "] * width]
+    column = 0
+    for part in re.split(r"(\x1b\[[0-9;]*[mK])", output):
+        if part.startswith("\x1b["):
+            if part.endswith("K"):
+                assert part == "\x1b[K"
+                # Pending wrap leaves the cursor on the last physical column.
+                start = min(column, width - 1)
+                if rows[-1][start] == "":
+                    start -= 1
+                rows[-1][start:] = [" "] * (width - start)
+            continue
+
+        for char in part:
+            if char == "\n":
+                rows.append([" "] * width)
+                column = 0
+            elif char == "\r":
+                column = 0
+            else:
+                assert char.isprintable()
+                assert not unicodedata.combining(char)
+                cells = 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+                assert cells <= width
+                if column + cells > width:
+                    rows.append([" "] * width)
+                    column = 0
+                rows[-1][column] = char
+                if cells == 2:
+                    rows[-1][column + 1] = ""
+                column += cells
+    return "\n".join("".join(row).rstrip() for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("output", "width", "expected"),
+    [
+        ("abcd\x1b[K\nef", 4, "abc\nef"),
+        ("abcd\nef", 4, "abcd\nef"),
+        ("abcdef", 4, "abcd\nef"),
+        ("abcd\x1b[31mef", 4, "abcd\nef"),
+        ("abcd\rxy\x1b[K", 4, "xy"),
+        ("ab界\x1b[K\nx", 4, "ab\nx"),
+        ("a界界", 4, "a界\n界"),
+        ("界界\x1b[31me", 4, "界界\ne"),
+    ],
+)
+def test_terminal_screen_text(output, width, expected):
+    assert terminal_screen_text(output, width=width) == expected
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_rows"),
+    [
+        pytest.param("abcd", ["abcd"], id="exact-width-final-row"),
+        pytest.param("abcdef", ["abcd", "ef"], id="short-final-row"),
+        pytest.param("界界界", ["界界", "界"], id="wide-characters"),
+    ],
+)
+def test_tty_setup_preserves_code_rows(monkeypatch, capsys, code, expected_rows):
+    monkeypatch.setattr("relay_auth.render_setup_markdown", lambda setup: f"```text\n{code}\n```\n")
+    monkeypatch.setenv("COLUMNS", "4")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+    print_setup(None)
+    output = capsys.readouterr().out
+
+    assert terminal_screen_text(output, width=4).splitlines() == ["", *expected_rows, ""]
+
+
+@pytest.mark.parametrize("width", [28, 58, 120])
+def test_tty_setup_preserves_values_on_screen(monkeypatch, capsys, width):
+    setup = generate_setup(
+        server_url="https://relay.example.test",
+        relay_id="85a06712-af14-47bc-a859-e8106cc786e8",
+        expires_days=None,
+        now=1_700_000_000,
+    )
+    monkeypatch.setenv("COLUMNS", str(width))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+    print_setup(setup)
+    output = capsys.readouterr().out
+
+    lines = re.sub(r"\x1b\[[0-9;]*[mK]", "", output).splitlines()
+    # The key wraps, so its first row fills the terminal width.
+    assert len(next(line for line in lines if "RELAY_SERVER_API_KEY=" in line)) == width
+    assert setup.token.value in "".join(lines)
+    screen = terminal_screen_text(output, width=width).replace("\n", "")
+    auth_lines = relay_toml_snippet(setup.keypair).splitlines()
+    assert auth_lines[0] in screen
+    for line in auth_lines[1:]:
+        field, value = line.split(" = ", 1)
+        assert re.search(rf"{field}\s*=\s*{re.escape(value)}", screen)
+    assert f"RELAY_SERVER_URL={setup.token.server_url}" in screen
+    assert f"RELAY_SERVER_API_KEY={setup.token.value}" in screen
 
 
 def test_inspect_token_returns_human_readable_claims():
