@@ -382,6 +382,24 @@ def expiry_note(expires_at: int | None) -> str:
     return f"Your API key expires at `{timestamp_text(expires_at)}`."
 
 
+def ending_column(line, width: int) -> int:
+    """Return the cell where the cursor stops after a terminal soft-wraps ``line``.
+
+    A character that does not fit in the cells left on a row starts the next row.
+    A result equal to ``width`` means the line ends exactly at the end of a row.
+    """
+    from rich.cells import cell_len
+
+    column = 0
+    for segment in line:
+        for char in segment.text:
+            cells = cell_len(char)
+            if column + cells > width:
+                column = 0
+            column += cells
+    return column
+
+
 def print_setup(setup: RelayAuthSetup) -> None:
     markdown = render_setup_markdown(setup)
     if sys.stdout.isatty():
@@ -404,7 +422,6 @@ def print_setup(setup: RelayAuthSetup) -> None:
                         code,
                         self.lexer_name,
                         theme=self.theme,
-                        word_wrap=True,
                         padding=0,
                         background_color=background,
                     )
@@ -416,13 +433,18 @@ def print_setup(setup: RelayAuthSetup) -> None:
                     )
                     yield erase_line
                     yield Segment.line()
-                    for line in Segment.split_lines(console.render(syntax, options)):
+                    for line_text in syntax.highlight(code).split("\n", allow_blank=False):
+                        # Each source line is written whole and the terminal soft-wraps it,
+                        # so selecting and copying a long value yields it without line breaks.
+                        line = list(line_text.render(console, end=""))
                         while line and line[-1].text.isspace():
                             line.pop()
-                        # The erase runs at column zero, before the line's text, so it
-                        # cannot clear any character the line writes.
-                        yield erase_line
                         yield from line
+                        column = ending_column(line, options.max_width)
+                        # A row filled exactly to the width leaves the cursor on its last
+                        # cell on some terminals; erasing from there would clear that cell.
+                        if column < options.max_width:
+                            yield erase_line
                         yield Segment.line()
                     yield erase_line
                     yield Segment.line()
@@ -434,7 +456,9 @@ def print_setup(setup: RelayAuthSetup) -> None:
                     "code_block": SetupCodeBlock,
                 }
 
-            Console().print(SetupMarkdown(markdown))
+            # Console.print crops each row to the terminal width unless told not to, which
+            # would cut the code lines the terminal is meant to soft-wrap.
+            Console().print(SetupMarkdown(markdown), crop=False)
             return
     print(markdown, end="" if markdown.endswith("\n") else "\n")
 
