@@ -108,6 +108,7 @@ The setup output gives you:
 - a `[[auth]]` block for Relay Server `relay.toml`
 - a `RELAY_SERVER_API_KEY` value for Git Sync
 - if `[webhook].url` is configured, a `[[webhooks]]` block and `WEBHOOK_SECRET`
+- with `--folder-channels`, a `RELAY_FOLDER_TOKENS` mapping
 
 Runtime API keys are only read from `RELAY_SERVER_API_KEY`; do not pass them as command
 arguments when running the server or sync command.
@@ -117,6 +118,29 @@ Use `--json` for machine-readable output.
 Inspect an existing API key with `uv run git-sync inspect-token "$RELAY_SERVER_API_KEY"`.
 Pass `--webhook-url https://your-git-sync-server.com/webhooks` only to override
 `[webhook].url`.
+
+### Folder-channel read tokens
+
+A document first loaded by a request without a routing channel can retain its own
+notification channel until eviction. Git Sync listens to shared-folder channels, so
+such a load can hide later edits from folder subscribers.
+
+Use `uv run git-sync generate-auth --folder-channels` to generate one read-only,
+relay-prefix-scoped token per configured shared folder. Each token carries that
+folder's channel claim. Setup prints a `RELAY_FOLDER_TOKENS` JSON mapping from
+shared-folder ID to token alongside the existing main API key and server auth block.
+Install the signing key's auth block in Relay Server before using these tokens.
+
+Set `RELAY_FOLDER_TOKENS` for both the daemon and `git-sync sync`. Markdown and canvas
+reads select the token for their shared folder. Folder-document reads, file downloads,
+and folders without an override keep using `RELAY_SERVER_API_KEY`. When the mapping
+is absent, existing behavior is retained. Runtime tokens belong in environment
+variables, not command-line arguments.
+
+This protects cold loads made by these document reads. It does not reroute a document
+already resident under another channel or repair historical missed notifications.
+Other channel-less readers still require a server-side fix. In forks with an attribution
+endpoint that ignores routing channels, folder tokens do not fix that endpoint.
 
 ### Webhook Authentication
 

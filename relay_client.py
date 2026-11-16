@@ -28,10 +28,25 @@ def is_unsynced_ydoc(doc: Doc) -> bool:
 class RelayClient:
     """Application wrapper around the Relay SDK with authentication handling"""
 
-    def __init__(self, relay_server_url: str, relay_server_api_key: Optional[str] = None):
+    def __init__(
+        self,
+        relay_server_url: str,
+        relay_server_api_key: Optional[str] = None,
+        folder_tokens: Optional[Dict[str, str]] = None,
+    ):
         self.relay_server_url = relay_server_url
         self.relay_server_api_key = relay_server_api_key
+        # Shared folder ID -> a token whose channel claim is that folder. Reading
+        # a folder's documents with it routes a document the read loads to the
+        # folder, so editors' later changes still reach folder subscribers.
+        self.folder_tokens = folder_tokens or {}
         self.dm = self._init_document_manager()
+
+    def _get_child_doc_as_update(self, resource: S3RNType, compound_doc_id: str) -> bytes:
+        token = self.folder_tokens.get(getattr(resource, "folder_id", None))
+        if token:
+            return self.dm.get_doc_as_update(compound_doc_id, token=token)
+        return self.dm.get_doc_as_update(compound_doc_id)
 
     def _init_document_manager(self) -> RelaySDKClient:
         """Initialize the SDK client with configurable server and authentication"""
@@ -58,7 +73,7 @@ class RelayClient:
             logger.debug(f"📄 Fetching document: {resource_name}")
 
             # Get the document as an update
-            update = self.dm.get_doc_as_update(compound_doc_id)
+            update = self._get_child_doc_as_update(resource, compound_doc_id)
 
             # Create a new Doc object and apply the update
             doc = Doc()
@@ -91,7 +106,7 @@ class RelayClient:
             logger.debug(f"🎨 Fetching canvas: {resource_name}")
 
             # Get the document as an update
-            update = self.dm.get_doc_as_update(compound_doc_id)
+            update = self._get_child_doc_as_update(resource, compound_doc_id)
 
             # Create a new Doc object and apply the update
             doc = Doc()

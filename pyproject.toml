@@ -45,6 +45,7 @@ py-modules = [
     "auth_middleware",
     "cli",
     "git_config",
+    "folder_channel_tokens",
     "jwt_auth",
     "models",
     "operations_queue",

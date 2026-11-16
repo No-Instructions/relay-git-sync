@@ -9,6 +9,7 @@ from operations_queue import OperationsQueue
 from persistence import PersistenceManager
 from relay_auth import generate_setup, print_setup
 from relay_client import RelayClient
+from folder_channel_tokens import parse_folder_tokens
 from sync_engine import SyncEngine
 from web_server import create_server
 from webhook_handler import WebhookProcessor
@@ -88,6 +89,7 @@ def run_server(
     git_config_file=None,
     websocket_reconnect_delay=5.0,
     relay_id: str = "",
+    folder_tokens=None,
 ):
     if not relay_id:
         raise ValueError("Relay ID is required")
@@ -115,7 +117,7 @@ def run_server(
 
     try:
         # Initialize components
-        relay_client = RelayClient(relay_server_url, relay_server_api_key)
+        relay_client = RelayClient(relay_server_url, relay_server_api_key, folder_tokens)
         persistence_manager = PersistenceManager(data_dir, git_config_file)
         sync_engine = SyncEngine(data_dir, relay_client, persistence_manager)
         webhook_processor = WebhookProcessor(relay_client)
@@ -226,6 +228,11 @@ if __name__ == "__main__":
         exit(1)
 
     relay_server_api_key = os.getenv("RELAY_SERVER_API_KEY")
+    try:
+        folder_tokens = parse_folder_tokens(os.getenv("RELAY_FOLDER_TOKENS", ""))
+    except ValueError as e:
+        print(f"Error: {e}")
+        exit(1)
 
     if not relay_server_api_key:
         # Setup mode: print auth setup instructions and exit cleanly. A nonzero
@@ -262,4 +269,5 @@ if __name__ == "__main__":
         args.config,
         args.websocket_reconnect_delay,
         relay_id=args.relay_id,
+        folder_tokens=folder_tokens,
     )
