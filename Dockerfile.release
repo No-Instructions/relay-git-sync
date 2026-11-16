@@ -1,0 +1,22 @@
+FROM python:3.14.10-slim-bookworm AS build
+
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends binutils git \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir uv==0.13.8
+WORKDIR /src
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project \
+    && uv pip install --python .venv/bin/python pyinstaller==6.22.3
+COPY *.py ./
+COPY git_host_keys ./git_host_keys
+COPY relay_sdk ./relay_sdk
+COPY templates ./templates
+COPY packaging ./packaging
+RUN .venv/bin/pyinstaller --noconfirm packaging/linux.spec \
+    && cp packaging/README.txt dist/relay-git-sync/README.txt \
+    && dist/relay-git-sync/git-sync --help \
+    && dist/relay-git-sync/git-sync-server --help
+
+FROM scratch AS binaries
+COPY --from=build /src/dist/relay-git-sync /relay-git-sync

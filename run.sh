@@ -4,4 +4,4 @@
 # a key file and GIT_SSH_COMMAND enforces it with strict host key checking
 # against known_hosts from git_connectors.toml and hosted provider keys.
 
-exec uv run app.py "$@"
+exec uv run --frozen --no-sync app.py "$@"

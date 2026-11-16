@@ -277,7 +277,7 @@ def inspect_token(token: str) -> TokenInfo:
     cose = cwt.value
     if not isinstance(cose, cbor2.CBORTag) or cose.tag != COSE_SIGN1_TAG:
         raise ValueError("token is not a COSE_Sign1 CWT")
-    if not isinstance(cose.value, list) or len(cose.value) != 4:
+    if not isinstance(cose.value, (list, tuple)) or len(cose.value) != 4:
         raise ValueError("token has an invalid COSE_Sign1 structure")
 
     protected = cbor2.loads(cose.value[0])

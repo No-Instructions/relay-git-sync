@@ -12,3 +12,6 @@ git_sync_key.pub
 .auth.staging.env
 repos/
 state/
+.local/
+.claude/
+.igit/

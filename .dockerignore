@@ -1,4 +1,5 @@
 .git
+.igit
 .claude
 .agents
 .auth.env
@@ -8,6 +9,7 @@
 .known_hosts_cache.json
 .pytest_cache
 .venv
+.local
 __pycache__
 *.py[cod]
 *.key
