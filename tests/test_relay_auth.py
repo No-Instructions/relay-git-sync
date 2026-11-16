@@ -1,7 +1,9 @@
 import json
 import re
+import unicodedata
 
 import cbor2
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from relay_auth import (
@@ -22,6 +24,7 @@ from relay_auth import (
     print_setup,
     relay_prefix,
     relay_toml_snippet,
+    relay_webhook_toml,
     render_setup_markdown,
     setup_as_json,
     timestamp_text,
@@ -206,6 +209,214 @@ def test_tty_setup_code_blocks_use_erase_line_background(monkeypatch, capsys):
             continue
         before_erase = line.split("\x1b[K", 1)[0]
         assert not ansi_pattern.sub("", before_erase).endswith(" ")
+
+
+def terminal_screen_rows(output: str, width: int) -> list[tuple[str, bool]]:
+    """Model terminals that keep the cursor on the last column after a full-width row.
+
+    This matches libvterm; xterm.js handles pending wrap differently. The model
+    supports one- and two-cell text, SGR, EL, and a TTY's LF-to-CRLF translation.
+    Combining characters and other terminal controls are outside its scope.
+
+    Each row is returned with whether the terminal soft-wrapped it into the next
+    row, which is what lets a selection copy the two rows as one line.
+    """
+    rows = [[" "] * width]
+    soft_wrapped = [False]
+    column = 0
+    for part in re.split(r"(\x1b\[[0-9;]*[mK])", output):
+        if part.startswith("\x1b["):
+            if part.endswith("K"):
+                assert part == "\x1b[K"
+                # Pending wrap leaves the cursor on the last physical column.
+                start = min(column, width - 1)
+                if rows[-1][start] == "":
+                    start -= 1
+                rows[-1][start:] = [" "] * (width - start)
+            continue
+
+        for char in part:
+            if char == "\n":
+                rows.append([" "] * width)
+                soft_wrapped.append(False)
+                column = 0
+            elif char == "\r":
+                column = 0
+            else:
+                assert char.isprintable()
+                assert not unicodedata.combining(char)
+                cells = 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+                assert cells <= width
+                if column + cells > width:
+                    soft_wrapped[-1] = True
+                    # A wide character that does not fit leaves its row's last cell unused.
+                    if column < width:
+                        rows[-1][column] = ""
+                    rows.append([" "] * width)
+                    soft_wrapped.append(False)
+                    column = 0
+                rows[-1][column] = char
+                if cells == 2:
+                    rows[-1][column + 1] = ""
+                column += cells
+    return [("".join(row), wrapped) for row, wrapped in zip(rows, soft_wrapped)]
+
+
+def terminal_screen_text(output: str, width: int) -> str:
+    return "\n".join(row.rstrip() for row, _ in terminal_screen_rows(output, width))
+
+
+def terminal_copied_text(output: str, width: int) -> str:
+    """Return what selecting the whole screen copies: soft-wrapped rows join without a break."""
+    copied = ""
+    for row, wrapped in terminal_screen_rows(output, width):
+        copied += row if wrapped else row.rstrip() + "\n"
+    return copied
+
+
+@pytest.mark.parametrize(
+    ("output", "width", "expected"),
+    [
+        ("abcd\x1b[K\nef", 4, "abc\nef"),
+        ("abcd\nef", 4, "abcd\nef"),
+        ("abcdef", 4, "abcd\nef"),
+        ("abcd\x1b[31mef", 4, "abcd\nef"),
+        ("abcd\rxy\x1b[K", 4, "xy"),
+        ("ab界\x1b[K\nx", 4, "ab\nx"),
+        ("a界界", 4, "a界\n界"),
+        ("界界\x1b[31me", 4, "界界\ne"),
+    ],
+)
+def test_terminal_screen_text(output, width, expected):
+    assert terminal_screen_text(output, width=width) == expected
+
+
+@pytest.mark.parametrize(
+    ("output", "width", "expected"),
+    [
+        ("abcdef", 4, "abcdef\n"),
+        ("abcd\nef", 4, "abcd\nef\n"),
+        ("abcd\x1b[K\nef", 4, "abc\nef\n"),
+        ("a界界", 4, "a界界\n"),
+    ],
+)
+def test_terminal_copied_text(output, width, expected):
+    assert terminal_copied_text(output, width=width) == expected
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_rows"),
+    [
+        pytest.param("abcd", ["abcd"], id="exact-width-final-row"),
+        pytest.param("abcdef", ["abcd", "ef"], id="short-final-row"),
+        pytest.param("界界界", ["界界", "界"], id="wide-characters"),
+    ],
+)
+def test_tty_setup_preserves_code_rows(monkeypatch, capsys, code, expected_rows):
+    monkeypatch.setattr("relay_auth.render_setup_markdown", lambda setup: f"```text\n{code}\n```\n")
+    monkeypatch.setenv("COLUMNS", "4")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+    print_setup(None)
+    output = capsys.readouterr().out
+
+    assert terminal_screen_text(output, width=4).splitlines() == ["", *expected_rows, ""]
+
+
+def tty_setup_output(monkeypatch, capsys, width, **setup_options):
+    setup = generate_setup(
+        server_url="https://relay.example.test",
+        relay_id="85a06712-af14-47bc-a859-e8106cc786e8",
+        expires_days=None,
+        now=1_700_000_000,
+        **setup_options,
+    )
+    monkeypatch.setenv("COLUMNS", str(width))
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+    print_setup(setup)
+    return setup, capsys.readouterr().out
+
+
+@pytest.mark.parametrize("width", [28, 58, 120])
+def test_tty_setup_preserves_values_on_screen(monkeypatch, capsys, width):
+    setup, output = tty_setup_output(monkeypatch, capsys, width)
+
+    screen = terminal_screen_text(output, width=width).replace("\n", "")
+    auth_lines = relay_toml_snippet(setup.keypair).splitlines()
+    assert auth_lines[0] in screen
+    for line in auth_lines[1:]:
+        field, value = line.split(" = ", 1)
+        assert re.search(rf"{field}\s*=\s*{re.escape(value)}", screen)
+    assert f"RELAY_SERVER_URL={setup.token.server_url}" in screen
+    assert f"RELAY_SERVER_API_KEY={setup.token.value}" in screen
+
+
+@pytest.mark.parametrize("width", [28, 58, 120])
+def test_tty_setup_values_copy_as_single_lines(monkeypatch, capsys, width):
+    setup, output = tty_setup_output(monkeypatch, capsys, width)
+
+    # The key is longer than every tested width, so the terminal has to wrap it.
+    assert len(setup.token.value) > width
+    copied_lines = terminal_copied_text(output, width=width).splitlines()
+    assert f"RELAY_SERVER_URL={setup.token.server_url}" in copied_lines
+    assert f"RELAY_SERVER_API_KEY={setup.token.value}" in copied_lines
+    for line in relay_toml_snippet(setup.keypair).splitlines():
+        assert line in copied_lines
+
+
+@pytest.mark.parametrize("width", [28, 58, 120])
+def test_tty_setup_copies_webhook_lines_whole(monkeypatch, capsys, width):
+    setup, output = tty_setup_output(
+        monkeypatch,
+        capsys,
+        width,
+        webhook_url="https://git-sync.example.test/webhooks/relay-long-path-that-wraps",
+        webhook_secret="fake-webhook-secret-" + "x" * 90,
+    )
+
+    copied_lines = terminal_copied_text(output, width=width).splitlines()
+    assert f"WEBHOOK_SECRET={setup.webhook.secret}" in copied_lines
+    for line in relay_webhook_toml(setup.webhook).splitlines()[1:]:
+        assert line in copied_lines
+
+
+def test_tty_setup_code_rows_keep_background(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "relay_auth.render_setup_markdown",
+        lambda setup: "```text\nshort\nabcdefghij\nabcdefghijkl\n```\n",
+    )
+    monkeypatch.setenv("COLUMNS", "10")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+    print_setup(None)
+    output = capsys.readouterr().out
+
+    # Every row paints its background to the end except the one that exactly fills the width.
+    erase = "\x1b[K"
+    rows = output.split("\n")[:-1]
+    assert [erase in row for row in rows] == [True, True, False, True, True]
+    assert terminal_copied_text(output, width=10) == "\nshort\nabcdefghij\nabcdefghijkl\n\n\n"
+
+
+def test_tty_setup_prose_is_unchanged(monkeypatch, capsys):
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    prose = "# Title\n\nSome `inline` prose that is long enough to wrap onto a second row.\n\n- one\n- two\n"
+    monkeypatch.setattr("relay_auth.render_setup_markdown", lambda setup: prose)
+    monkeypatch.setenv("COLUMNS", "30")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+    print_setup(None)
+    output = capsys.readouterr().out
+
+    Console().print(Markdown(prose))
+    assert output == capsys.readouterr().out
 
 
 def test_inspect_token_returns_human_readable_claims():
