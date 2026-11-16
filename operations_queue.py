@@ -145,7 +145,11 @@ class OperationsQueue:
 
     def _maybe_commit_changes(self):
         """Commit changes to git repositories if there are any"""
-        if not self.sync_state.has_changes:
+        # has_failed_pushes keeps the timer retrying a push that failed after its
+        # commit was made, so the backlog goes out without waiting for another edit.
+        if not (
+            self.sync_state.has_changes or self.sync_engine.persistence_manager.has_failed_pushes
+        ):
             return
 
         try:

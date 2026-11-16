@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import json
+import logging
 import os
 import shutil
 import tempfile
+import time
 from unittest.mock import MagicMock, mock_open, patch
 
 import git
@@ -939,6 +941,119 @@ class TestOutOfBandPushRecovery:
         assert self._reached_remote(
             self.mine.head.commit.hexsha
         ), "rejected push was not recovered (rebase + re-push)"
+
+    def _remote_rejects_pushes(self):
+        hook = os.path.join(self.remote_path, "hooks", "pre-receive")
+        with open(hook, "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        os.chmod(hook, 0o755)
+
+    def _commit_mine(self, name, **env):
+        with open(os.path.join(self.mine_path, name), "w") as f:
+            f.write("mine\n")
+        self.mine.git.add(A=True)
+        with self.mine.git.custom_environment(**env):
+            self.mine.git.commit("-m", f"mine: {name}")
+
+    def test_remote_rejection_logs_reason(self, caplog):
+        self._remote_rejects_pushes()
+        self._commit_mine("mine.md")
+
+        with caplog.at_level(logging.INFO, logger="persistence"):
+            self.pm._push_to_remote(self.repo_key, self.mine)
+
+        still_failing = [
+            r.getMessage() for r in caplog.records if "Push still failing" in r.getMessage()
+        ]
+        assert still_failing and "pre-receive hook declined" in still_failing[0]
+        assert not any("Push stalled" in r.getMessage() for r in caplog.records)
+
+    def test_long_rejected_push_logs_stall(self, caplog):
+        self._remote_rejects_pushes()
+        old = "2026-01-01T00:00:00+00:00"
+        self._commit_mine("old.md", GIT_COMMITTER_DATE=old, GIT_AUTHOR_DATE=old)
+        self._commit_mine("new.md")
+
+        with caplog.at_level(logging.INFO, logger="persistence"):
+            self.pm._push_to_remote(self.repo_key, self.mine)
+
+        assert any(
+            "Push stalled over 30 minutes for relay/folder: 2 commits unpushed" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_persistent_transport_failure_logs_stall(self, caplog):
+        self.mine.remotes.origin.set_url(os.path.join(self.temp_dir, "missing.git"))
+        old = "2026-01-01T00:00:00+00:00"
+        self._commit_mine("old.md", GIT_COMMITTER_DATE=old, GIT_AUTHOR_DATE=old)
+
+        with caplog.at_level(logging.INFO, logger="persistence"):
+            self.pm._push_to_remote(self.repo_key, self.mine)
+
+        assert self.pm.has_failed_pushes
+        assert any(
+            "Push stalled over 30 minutes for relay/folder: 1 commits unpushed" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_failed_push_is_retried_without_a_new_edit(self):
+        self._remote_rejects_pushes()
+        self._commit_mine("mine.md")
+        self.pm._push_to_remote(self.repo_key, self.mine)
+        assert self.pm.has_failed_pushes
+
+        os.remove(os.path.join(self.remote_path, "hooks", "pre-receive"))
+        self.pm.commit_changes()
+        assert not self._reached_remote(
+            self.mine.head.commit.hexsha
+        ), "retried before PUSH_RETRY_INTERVAL_SECONDS elapsed"
+
+        self.pm.PUSH_RETRY_INTERVAL_SECONDS = 0
+        self.pm.commit_changes()
+        assert self._reached_remote(self.mine.head.commit.hexsha)
+        assert not self.pm.has_failed_pushes
+
+    def test_new_edit_waits_for_push_retry_interval(self, caplog):
+        self._remote_rejects_pushes()
+        self._commit_mine("mine.md")
+        self.pm._push_to_remote(self.repo_key, self.mine)
+        os.remove(os.path.join(self.remote_path, "hooks", "pre-receive"))
+
+        with open(os.path.join(self.mine_path, "edit.md"), "w") as f:
+            f.write("edit\n")
+        assert self.pm.commit_changes()
+        assert not self._reached_remote(self.mine.head.commit.hexsha)
+
+        self.pm.PUSH_RETRY_INTERVAL_SECONDS = 0
+        with open(os.path.join(self.mine_path, "edit-2.md"), "w") as f:
+            f.write("edit\n")
+        assert self.pm.commit_changes()
+        assert self._reached_remote(self.mine.head.commit.hexsha)
+
+    def _stall_messages_for_backlog_age(self, caplog, age_seconds):
+        self._remote_rejects_pushes()
+        when = f"@{int(time.time() - age_seconds)} +0000"
+        self._commit_mine("aged.md", GIT_COMMITTER_DATE=when, GIT_AUTHOR_DATE=when)
+        with caplog.at_level(logging.INFO, logger="persistence"):
+            self.pm._push_to_remote(self.repo_key, self.mine)
+        return [
+            (r.levelno, r.getMessage())
+            for r in caplog.records
+            if r.getMessage().startswith("Push stalled")
+        ]
+
+    def test_backlog_under_warning_age_logs_no_stall(self, caplog):
+        assert self._stall_messages_for_backlog_age(caplog, 4 * 60) == []
+
+    def test_backlog_past_warning_age_warns(self, caplog):
+        [(level, message)] = self._stall_messages_for_backlog_age(caplog, 6 * 60)
+        assert level == logging.WARNING
+        assert message.startswith("Push stalled for relay/folder: 1 commits unpushed")
+
+    def test_backlog_past_error_age_logs_error(self, caplog):
+        [(level, message)] = self._stall_messages_for_backlog_age(caplog, 31 * 60)
+        assert level == logging.ERROR
+        assert message.startswith("Push stalled over 30 minutes for relay/folder:")
 
     def test_configure_remote_repairs_obvious_missing_upstream(self):
         self._unset_upstream(self.mine)
