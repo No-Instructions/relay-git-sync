@@ -78,4 +78,10 @@ pythonpath = ["."]
 [dependency-groups]
 dev = [
     "pytest>=8.4.1",
+    # starlette.testclient (tests/test_api_endpoints.py, tests/test_authentication.py)
+    # imports httpx2 first and only falls back to the deprecated httpx client.
+    # httpx2 requires Python >= 3.11, matching the locked starlette 1.10.0
+    # resolution; Python 3.10 keeps starlette 1.7.0 with the httpx fallback.
+    "httpx2>=2.0.0; python_version >= '3.11'",
+    "httpx>=0.27.0,<0.29.0; python_version < '3.11'",
 ]
