@@ -20,6 +20,4 @@ git_sync_key.pub
 repos
 ssh
 state
-tests
-test_*.py
 trigger_*.py

@@ -1,4 +1,4 @@
-FROM python:3.14-slim-trixie
+FROM python:3.14-slim-trixie AS runtime
 
 # Install system dependencies
 RUN apt-get update && apt-get upgrade -y \
@@ -48,3 +48,10 @@ EXPOSE 8000
 
 # Run the application. Docker command arguments are passed to app.py.
 ENTRYPOINT ["./run.sh"]
+
+FROM runtime AS test
+COPY tests ./tests
+COPY pytest.ini ./
+RUN uv sync --frozen && .venv/bin/python -m pytest -q
+
+FROM runtime
