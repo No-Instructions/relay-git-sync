@@ -146,6 +146,13 @@ class PersistenceManager:
     MIRROR_BASE_DIR = "repos"
     LOCAL_STATE_FILE = "local_state.json"
     UNPUSHED_CHECK_FETCH_INTERVAL_SECONDS = 300
+    # CVE-2026-105437: git before 2.49.1 (and the 2.50-2.56 lines before their
+    # fixes) overflows a 32-bit merge-size counter when a committed .gitattributes
+    # sets a huge conflict-marker-size and a merge or rebase hits many conflicts.
+    # $GIT_DIR/info/attributes has the highest attribute precedence, so pinning the
+    # default marker size there neutralises any in-tree .gitattributes committed by
+    # a Relay collaborator or pushed to the remote branch.
+    CONFLICT_MARKER_ATTRIBUTE = "* conflict-marker-size=7"
 
     def __init__(self, data_dir: str = ".", git_config_file: Optional[str] = None):
         self.data_dir = data_dir
@@ -661,6 +668,36 @@ class PersistenceManager:
         with self.resource_index_lock:
             self._build_resource_index(relay_id)
 
+    def _pin_conflict_marker_size(self, git_repo: git.Repo) -> None:
+        """Pin conflict-marker-size in $GIT_DIR/info/attributes before any merge runs.
+
+        The pin overrides every in-tree .gitattributes (CVE-2026-105437). Failure to
+        write it leaves the repository exposed, so the error is raised and the
+        repository is not registered for syncing.
+        """
+        info_dir = os.path.join(git_repo.git_dir, "info")
+        attributes_path = os.path.join(info_dir, "attributes")
+        try:
+            os.makedirs(info_dir, exist_ok=True)
+            existing = ""
+            if os.path.exists(attributes_path):
+                with open(attributes_path, "r", encoding="utf-8") as f:
+                    existing = f.read()
+            if self.CONFLICT_MARKER_ATTRIBUTE in existing.splitlines():
+                return
+            # Later lines override earlier ones, so appending wins over any prior
+            # conflict-marker-size entry in this file.
+            with open(attributes_path, "a", encoding="utf-8") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(self.CONFLICT_MARKER_ATTRIBUTE + "\n")
+        except OSError as e:
+            logger.error(
+                f"Could not pin conflict-marker-size in {attributes_path}; "
+                f"refusing to use repository without CVE-2026-105437 mitigation: {e}"
+            )
+            raise
+
     def init_git_repo(self, relay_id: str, folder_id: str) -> git.Repo:
         """Initialize git repository for a specific folder within a relay"""
         folder_path = self.get_folder_path(relay_id, folder_id)
@@ -677,6 +714,7 @@ class PersistenceManager:
 
             # If repo exists and has remotes, pull latest changes
             git_repo = self.git_repos[repo_key]
+            self._pin_conflict_marker_size(git_repo)
             self._ensure_configured_branch(repo_key, git_repo)
             if git_repo.remotes:
                 self._pull_from_remote(repo_key, git_repo)
@@ -691,6 +729,7 @@ class PersistenceManager:
                     self.git_repos[repo_key] = git.Repo.clone_from(
                         connector.url, folder_path, branch=connector.branch
                     )
+                    self._pin_conflict_marker_size(self.git_repos[repo_key])
                     self._repair_tracking_branch_if_obvious(repo_key, self.git_repos[repo_key])
                     print(f"Successfully cloned repository to {folder_path}")
                     return self.git_repos[repo_key]
@@ -700,6 +739,7 @@ class PersistenceManager:
 
             # Create new repo
             self.git_repos[repo_key] = git.Repo.init(folder_path, initial_branch="main")
+            self._pin_conflict_marker_size(self.git_repos[repo_key])
             print(
                 f"Initialized new git repository for folder {folder_id} in relay {relay_id} at {folder_path} with main branch"
             )

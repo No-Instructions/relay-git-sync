@@ -637,7 +637,9 @@ class TestGitOperations:
         """Test initializing new git repository"""
         # Mock git.Repo to raise InvalidGitRepositoryError first (no existing repo)
         mock_git_repo.side_effect = [git.InvalidGitRepositoryError, MagicMock()]
-        mock_git_repo.init.return_value = MagicMock()
+        new_repo = MagicMock()
+        new_repo.git_dir = os.path.join(self.temp_dir, "new-repo.git")
+        mock_git_repo.init.return_value = new_repo
 
         repo = self.persistence.init_git_repo(self.relay_id, self.folder_id)
 
@@ -645,9 +647,14 @@ class TestGitOperations:
         expected_path = self.persistence.get_folder_path(self.relay_id, self.folder_id)
         mock_git_repo.init.assert_called_once_with(expected_path, initial_branch="main")
 
+        # CVE-2026-105437 mitigation is pinned before the repository is used
+        with open(os.path.join(new_repo.git_dir, "info", "attributes")) as f:
+            assert PersistenceManager.CONFLICT_MARKER_ATTRIBUTE in f.read().splitlines()
+
     def test_init_git_repo_uses_existing_repo(self, mock_git_repo):
         """Test using existing git repository"""
         mock_repo = MagicMock()
+        mock_repo.git_dir = os.path.join(self.temp_dir, "existing-repo.git")
         mock_git_repo.return_value = mock_repo
 
         repo = self.persistence.init_git_repo(self.relay_id, self.folder_id)
@@ -656,6 +663,10 @@ class TestGitOperations:
         expected_path = self.persistence.get_folder_path(self.relay_id, self.folder_id)
         mock_git_repo.assert_called_with(expected_path)
         assert repo == mock_repo
+
+        # CVE-2026-105437 mitigation is pinned when an existing repository is opened
+        with open(os.path.join(mock_repo.git_dir, "info", "attributes")) as f:
+            assert PersistenceManager.CONFLICT_MARKER_ATTRIBUTE in f.read().splitlines()
 
     @patch("os.path.exists")
     def test_commit_changes_with_dirty_repo(self, mock_exists, mock_git_repo):
