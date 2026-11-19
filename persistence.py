@@ -683,10 +683,11 @@ class PersistenceManager:
             if os.path.exists(attributes_path):
                 with open(attributes_path, "r", encoding="utf-8") as f:
                     existing = f.read()
-            if self.CONFLICT_MARKER_ATTRIBUTE in existing.splitlines():
+            # Later lines override earlier ones: skip only if the pin is already the
+            # final effective rule, otherwise append so it is.
+            effective = [line for line in existing.splitlines() if line.strip()]
+            if effective and effective[-1].strip() == self.CONFLICT_MARKER_ATTRIBUTE:
                 return
-            # Later lines override earlier ones, so appending wins over any prior
-            # conflict-marker-size entry in this file.
             with open(attributes_path, "a", encoding="utf-8") as f:
                 if existing and not existing.endswith("\n"):
                     f.write("\n")
@@ -698,6 +699,16 @@ class PersistenceManager:
             )
             raise
 
+    def _publish_pinned_repo(self, repo_key: str, git_repo: git.Repo) -> git.Repo:
+        """Cache a repository only after its conflict-marker-size pin succeeded."""
+        try:
+            self._pin_conflict_marker_size(git_repo)
+        except OSError:
+            self.git_repos.pop(repo_key, None)
+            raise
+        self.git_repos[repo_key] = git_repo
+        return git_repo
+
     def init_git_repo(self, relay_id: str, folder_id: str) -> git.Repo:
         """Initialize git repository for a specific folder within a relay"""
         folder_path = self.get_folder_path(relay_id, folder_id)
@@ -707,39 +718,44 @@ class PersistenceManager:
 
         try:
             # Try to open existing repo
-            self.git_repos[repo_key] = git.Repo(folder_path)
+            git_repo = git.Repo(folder_path)
+        except git.InvalidGitRepositoryError:
+            git_repo = None
+
+        if git_repo is not None:
             print(
                 f"Using existing git repository for folder {folder_id} in relay {relay_id} at {folder_path}"
             )
 
-            # If repo exists and has remotes, pull latest changes
-            git_repo = self.git_repos[repo_key]
-            self._pin_conflict_marker_size(git_repo)
+            # Pin before caching or pulling; a pin failure leaves nothing cached.
+            self._publish_pinned_repo(repo_key, git_repo)
             self._ensure_configured_branch(repo_key, git_repo)
             if git_repo.remotes:
                 self._pull_from_remote(repo_key, git_repo)
 
-        except git.InvalidGitRepositoryError:
+        else:
             # Repository doesn't exist locally, check if we should clone from remote
             connector = self.git_config.get_connector_for_folder(relay_id, folder_id)
             if connector and connector.url:
                 # Clone from remote
+                cloned = None
                 try:
                     print(f"Cloning repository from {connector.url} for folder {folder_id}")
-                    self.git_repos[repo_key] = git.Repo.clone_from(
+                    cloned = git.Repo.clone_from(
                         connector.url, folder_path, branch=connector.branch
                     )
-                    self._pin_conflict_marker_size(self.git_repos[repo_key])
-                    self._repair_tracking_branch_if_obvious(repo_key, self.git_repos[repo_key])
-                    print(f"Successfully cloned repository to {folder_path}")
-                    return self.git_repos[repo_key]
                 except Exception as e:
                     logger.warning(f"Failed to clone repository {connector.url}: {e}")
                     # Fall through to create new repo
+                if cloned is not None:
+                    # Outside the clone try/except so a pin failure is never swallowed.
+                    self._publish_pinned_repo(repo_key, cloned)
+                    self._repair_tracking_branch_if_obvious(repo_key, cloned)
+                    print(f"Successfully cloned repository to {folder_path}")
+                    return cloned
 
             # Create new repo
-            self.git_repos[repo_key] = git.Repo.init(folder_path, initial_branch="main")
-            self._pin_conflict_marker_size(self.git_repos[repo_key])
+            self._publish_pinned_repo(repo_key, git.Repo.init(folder_path, initial_branch="main"))
             print(
                 f"Initialized new git repository for folder {folder_id} in relay {relay_id} at {folder_path} with main branch"
             )

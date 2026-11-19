@@ -9,7 +9,8 @@ in ``$GIT_DIR/info/attributes``, which takes precedence over in-tree attributes.
 import os
 import shutil
 import tempfile
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import git
 import pytest
@@ -102,6 +103,82 @@ class TestConflictMarkerPin:
 
         with pytest.raises(OSError):
             self.persistence._pin_conflict_marker_size(repo)
+
+    def test_later_conflicting_rule_is_overridden(self):
+        repo = self.persistence.init_git_repo(self.relay_id, self.folder_id)
+        with open(_attributes_path(repo), "a", encoding="utf-8") as f:
+            f.write("* conflict-marker-size=4000\n")
+        assert _check_attr(repo, "note.md") == "4000"
+
+        self.persistence._pin_conflict_marker_size(repo)
+
+        with open(_attributes_path(repo), encoding="utf-8") as f:
+            lines = [line for line in f.read().splitlines() if line.strip()]
+        assert lines == [PIN, "* conflict-marker-size=4000", PIN]
+        assert _check_attr(repo, "note.md") == "7"
+
+    def _break_info_dir(self, git_dir: str) -> None:
+        info_dir = os.path.join(git_dir, "info")
+        shutil.rmtree(info_dir, ignore_errors=True)
+        with open(info_dir, "w", encoding="utf-8") as f:
+            f.write("not a directory\n")
+
+    def test_pin_failure_on_open_leaves_no_cached_repo_and_never_pulls(self):
+        folder_path = self.persistence.get_folder_path(self.relay_id, self.folder_id)
+        os.makedirs(folder_path, exist_ok=True)
+        existing = git.Repo.init(folder_path, initial_branch="main")
+        _configure_identity(existing)
+        with open(os.path.join(folder_path, "note.md"), "w", encoding="utf-8") as f:
+            f.write("hello\n")
+        _commit_all(existing, "seed")
+        existing.create_remote("origin", os.path.join(self.temp_dir, "remote.git"))
+        self._break_info_dir(existing.git_dir)
+        self.persistence._pull_from_remote = MagicMock()
+
+        with pytest.raises(OSError):
+            self.persistence.init_git_repo(self.relay_id, self.folder_id)
+
+        assert f"{self.relay_id}/{self.folder_id}" not in self.persistence.git_repos
+        self.persistence._pull_from_remote.assert_not_called()
+
+    def test_pin_failure_after_clone_is_not_swallowed(self):
+        remote_path = os.path.join(self.temp_dir, "remote.git")
+        git.Repo.init(remote_path, bare=True, initial_branch="main")
+        seed_path = os.path.join(self.temp_dir, "seed")
+        seed = git.Repo.clone_from(remote_path, seed_path)
+        _configure_identity(seed)
+        with open(os.path.join(seed_path, "note.md"), "w", encoding="utf-8") as f:
+            f.write("hello\n")
+        _commit_all(seed, "seed")
+        seed.git.push("origin", "main")
+        seed_head = seed.head.commit.hexsha
+
+        connector = SimpleNamespace(url=remote_path, branch="main", remote_name="origin")
+        self.persistence.git_config.get_connector_for_folder = MagicMock(return_value=connector)
+        self.persistence._pull_from_remote = MagicMock()
+
+        with patch.object(
+            PersistenceManager, "_pin_conflict_marker_size", side_effect=OSError("disk full")
+        ):
+            with pytest.raises(OSError):
+                self.persistence.init_git_repo(self.relay_id, self.folder_id)
+
+        assert f"{self.relay_id}/{self.folder_id}" not in self.persistence.git_repos
+        self.persistence._pull_from_remote.assert_not_called()
+        # The clone was not replaced by a fresh init.
+        folder_path = self.persistence.get_folder_path(self.relay_id, self.folder_id)
+        cloned = git.Repo(folder_path)
+        assert cloned.head.commit.hexsha == seed_head
+        assert [r.name for r in cloned.remotes] == ["origin"]
+
+    def test_pin_failure_on_init_leaves_no_cached_repo(self):
+        with patch.object(
+            PersistenceManager, "_pin_conflict_marker_size", side_effect=OSError("disk full")
+        ):
+            with pytest.raises(OSError):
+                self.persistence.init_git_repo(self.relay_id, self.folder_id)
+
+        assert self.persistence.git_repos == {}
 
     def test_committed_gitattributes_cannot_raise_marker_size_during_merge(self):
         repo = self.persistence.init_git_repo(self.relay_id, self.folder_id)
