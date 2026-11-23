@@ -193,12 +193,12 @@ class PersistenceManager:
         # In-memory storage for state (these will be loaded/saved per relay)
         self.document_hashes: Dict[str, Dict[str, str]] = {}  # keyed by relay_id then doc_id
         self.subdoc_heads: Dict[str, Dict[str, str]] = {}  # keyed by relay_id then doc_id
-        self.filemeta_folders: Dict[str, Dict[str, Dict]] = (
-            {}
-        )  # keyed by relay_id then folder doc_id
-        self.local_file_state: Dict[str, Dict[str, Dict]] = (
-            {}
-        )  # keyed by relay_id then folder_id then path
+        self.filemeta_folders: Dict[
+            str, Dict[str, Dict]
+        ] = {}  # keyed by relay_id then folder doc_id
+        self.local_file_state: Dict[
+            str, Dict[str, Dict]
+        ] = {}  # keyed by relay_id then folder_id then path
 
         # In-memory resource index (built from existing data sources)
         self.resource_index: Dict[str, Dict[str, Dict]] = {}  # keyed by relay_id then resource_id
