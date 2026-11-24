@@ -445,8 +445,12 @@ class PersistenceManager:
         Uses git's GIT_CONFIG_COUNT/KEY/VALUE environment override (git >= 2.31) so the
         setting applies to clone, checkout, merge, rebase and commit alike and cannot
         be overridden by a repository's own .git/config. Returns the directory used.
+
+        The path must be absolute: git resolves a relative core.hooksPath against the
+        worktree of the repository being operated on, so a relative value would let a
+        cloned repository supply its own hooks under that name.
         """
-        hooks_dir = os.path.join(self.data_dir, self.HOOKS_DISABLED_DIRNAME)
+        hooks_dir = os.path.abspath(os.path.join(self.data_dir, self.HOOKS_DISABLED_DIRNAME))
         os.makedirs(hooks_dir, exist_ok=True)
 
         try:

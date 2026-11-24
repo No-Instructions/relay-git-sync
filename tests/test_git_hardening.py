@@ -185,3 +185,50 @@ class TestGitHardening:
         assert os.environ["GIT_CONFIG_COUNT"] == "2"
         assert os.environ["GIT_CONFIG_VALUE_1"] == hooks_dir
         assert os.environ["GIT_CONFIG_VALUE_0"] == "env-user"
+
+    # -- (c) the hooks directory is ours even when data_dir is relative -------
+
+    def test_relative_data_dir_cannot_be_hijacked_by_cloned_hooks(self, monkeypatch):
+        """core.hooksPath must be absolute: git resolves a relative value against the
+        worktree being operated on, so a remote shipping an executable
+        ``.git-hooks-disabled/post-checkout`` would run it during the clone."""
+        origin = self._make_origin(uncheckoutable=False)
+        marker = os.path.join(self.temp_dir, "marker-clone")
+        src_dir = os.path.join(self.temp_dir, "src")
+        src = git.Repo(src_dir)
+        _plant_hook(
+            os.path.join(src_dir, PersistenceManager.HOOKS_DISABLED_DIRNAME),
+            "post-checkout",
+            marker,
+        )
+        src.git.add("-A")
+        src.index.commit("ship hooks under the disabled-hooks name", skip_hooks=True)
+        src.git.push(origin, "main:main")
+
+        data_dir = os.path.join(self.temp_dir, "data")
+        os.makedirs(data_dir)
+        monkeypatch.chdir(data_dir)
+        with patch.object(PersistenceManager, "_initialize_all_git_repos"):
+            persistence = PersistenceManager(".")
+
+        hooks_path = os.environ["GIT_CONFIG_VALUE_0"]
+        assert os.path.isabs(hooks_path)
+        assert hooks_path == os.path.join(data_dir, PersistenceManager.HOOKS_DISABLED_DIRNAME)
+
+        with patch.object(
+            persistence.git_config,
+            "get_connector_for_folder",
+            return_value=self._connector(f"file://{origin}"),
+        ):
+            repo = persistence.init_git_repo(self.relay_id, self.folder_id)
+
+        tracked_hook = os.path.join(
+            repo.working_tree_dir, PersistenceManager.HOOKS_DISABLED_DIRNAME, "post-checkout"
+        )
+        assert os.path.isfile(tracked_hook), "the hostile hook was checked out as content"
+        assert not os.path.exists(marker), "a hook shipped by the remote ran during clone"
+        # Plain git commands in the clone keep resolving hooks outside the worktree.
+        assert repo.git.config("core.hooksPath") == hooks_path
+        _configure_identity(repo)
+        repo.git.commit("--allow-empty", "-m", "after clone")
+        assert not os.path.exists(marker)
