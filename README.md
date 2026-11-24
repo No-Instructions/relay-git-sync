@@ -229,6 +229,20 @@ docker run --rm \
 - `--webhook-secret`: Optional webhook secret (or set `WEBHOOK_SECRET`); enables `/webhooks`
 - `--websocket-reconnect-delay`: Seconds to wait before reconnecting Relay websocket listeners (default: 5)
 
+#### Push Failure Logging
+
+While a repo's pushes are failing, git-sync retries at most once a minute, from the commit
+timer or with the next commit, until one succeeds. Each failure is logged with the remote's
+reason. Once the oldest commit no remote has accepted is
+older than `RELAY_GIT_STALLED_PUSH_WARNING_SECONDS` (default: 300), every failed attempt also
+logs a warning, and once it is older than `RELAY_GIT_STALLED_PUSH_ERROR_SECONDS` (default: 1800),
+an error instead. Alerting can key on either line:
+
+```
+Push stalled for <relay_id>/<folder_id>: N commits unpushed, oldest from M minutes ago
+Push stalled over 30 minutes for <relay_id>/<folder_id>: N commits unpushed, oldest from M minutes ago
+```
+
 
 ### Manual Sync
 
