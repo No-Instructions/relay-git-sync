@@ -153,10 +153,18 @@ class PersistenceManager:
     # default marker size there neutralises any in-tree .gitattributes committed by
     # a Relay collaborator or pushed to the remote branch.
     CONFLICT_MARKER_ATTRIBUTE = "* conflict-marker-size=7"
+    # CVE-2026-111760: git before 2.50.2 can be made to write into .git while
+    # checking out a crafted tree, after which git would execute repository
+    # controlled hooks on the next command. Every git invocation made by this
+    # process therefore reads hooks from an empty directory we own instead of the
+    # repository, independent of the installed git version.
+    HOOKS_DISABLED_DIRNAME = ".git-hooks-disabled"
 
     def __init__(self, data_dir: str = ".", git_config_file: Optional[str] = None):
         self.data_dir = data_dir
         self.git_repos: Dict[str, git.Repo] = {}  # Now keyed by "relay_id/folder_id"
+        # Must precede any git invocation, including repository initialization below.
+        self._disable_repository_hooks()
         self.git_lock = threading.Lock()  # Prevent concurrent git operations
         # Last fetch time per repo for the unpushed-commit check, keyed by repo_key
         self._unpushed_check_fetch_times: Dict[str, float] = {}
@@ -430,6 +438,29 @@ class PersistenceManager:
         except Exception as e:
             logger.error(f"Error initializing Git repositories from TOML: {e}")
             return 0
+
+    def _disable_repository_hooks(self) -> str:
+        """Point core.hooksPath for every git command at an empty directory we control.
+
+        Uses git's GIT_CONFIG_COUNT/KEY/VALUE environment override (git >= 2.31) so the
+        setting applies to clone, checkout, merge, rebase and commit alike and cannot
+        be overridden by a repository's own .git/config. Returns the directory used.
+        """
+        hooks_dir = os.path.join(self.data_dir, self.HOOKS_DISABLED_DIRNAME)
+        os.makedirs(hooks_dir, exist_ok=True)
+
+        try:
+            count = int(os.environ.get("GIT_CONFIG_COUNT", "0") or 0)
+        except ValueError:
+            count = 0
+        for index in range(count):
+            if os.environ.get(f"GIT_CONFIG_KEY_{index}", "").lower() == "core.hookspath":
+                os.environ[f"GIT_CONFIG_VALUE_{index}"] = hooks_dir
+                return hooks_dir
+        os.environ[f"GIT_CONFIG_KEY_{count}"] = "core.hooksPath"
+        os.environ[f"GIT_CONFIG_VALUE_{count}"] = hooks_dir
+        os.environ["GIT_CONFIG_COUNT"] = str(count + 1)
+        return hooks_dir
 
     def _setup_global_ssh_environment(self):
         """Set up SSH environment variables globally for all Git operations"""
@@ -739,14 +770,28 @@ class PersistenceManager:
             if connector and connector.url:
                 # Clone from remote
                 cloned = None
+                # Clone beside the target and move it into place only once it has fully
+                # succeeded. A clone that fetched but failed to check out leaves its
+                # repository behind (git: "Clone succeeded, but checkout failed"), and a
+                # crafted remote can make that checkout write into .git
+                # (CVE-2026-111760); re-initialising on top of such a leftover would run
+                # whatever it planted. Nothing from a failed clone may reach folder_path.
+                clone_dir = f"{folder_path}.clone-{os.getpid()}"
                 try:
                     print(f"Cloning repository from {connector.url} for folder {folder_id}")
-                    cloned = git.Repo.clone_from(
-                        connector.url, folder_path, branch=connector.branch
-                    )
+                    shutil.rmtree(clone_dir, ignore_errors=True)
+                    staged = git.Repo.clone_from(connector.url, clone_dir, branch=connector.branch)
+                    staged.close()
+                    if os.path.isdir(folder_path) and not os.listdir(folder_path):
+                        os.rmdir(folder_path)
+                    os.rename(clone_dir, folder_path)
+                    cloned = git.Repo(folder_path)
                 except Exception as e:
                     logger.warning(f"Failed to clone repository {connector.url}: {e}")
+                    cloned = None
                     # Fall through to create new repo
+                finally:
+                    shutil.rmtree(clone_dir, ignore_errors=True)
                 if cloned is not None:
                     # Outside the clone try/except so a pin failure is never swallowed.
                     self._publish_pinned_repo(repo_key, cloned)
@@ -776,7 +821,7 @@ class PersistenceManager:
                     f.write("# Relay sync repository - content only\n")
 
                 self.git_repos[repo_key].index.add([".gitignore"])
-                self.git_repos[repo_key].index.commit("Initial commit")
+                self.git_repos[repo_key].index.commit("Initial commit", skip_hooks=True)
                 print(f"Created initial git commit for folder {folder_id} in relay {relay_id}")
 
         return self.git_repos[repo_key]
@@ -957,7 +1002,9 @@ class PersistenceManager:
                     commit_msg = f"Auto-sync: {timestamp}"
 
                     # Commit changes using safe git operation
-                    self._safe_git_operation(lambda: git_repo.index.commit(commit_msg))
+                    self._safe_git_operation(
+                        lambda: git_repo.index.commit(commit_msg, skip_hooks=True)
+                    )
                     print(f"Git commit for repository {repo_key}: {commit_msg}")
                     committed_any = True
 
